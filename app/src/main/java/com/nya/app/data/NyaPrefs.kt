@@ -21,6 +21,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "nya_prefs")
 
+/**
+ * 自动追加模式
+ * - IDLE：用户停顿 1.2s 后追加（实时模式）
+ * - PUNCTUATION：仅在标点符号后追加
+ */
+enum class AppendMode { IDLE, PUNCTUATION }
+
 class NyaPrefs(private val context: Context) {
 
     private object Keys {
@@ -28,6 +35,7 @@ class NyaPrefs(private val context: Context) {
         val APPEND_CONTENT = stringPreferencesKey("append_content")
         val WHITELIST_PACKAGES = stringSetPreferencesKey("whitelist_packages")
         val IS_GLOBAL_MODE = booleanPreferencesKey("is_global_mode")
+        val APPEND_MODE = stringPreferencesKey("append_mode")
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -49,6 +57,15 @@ class NyaPrefs(private val context: Context) {
         .map { p -> p[Keys.IS_GLOBAL_MODE] ?: true }
         .stateIn(scope, SharingStarted.Eagerly, true)
 
+    val appendMode: Flow<AppendMode> = context.dataStore.data
+        .map { p ->
+            when (p[Keys.APPEND_MODE]) {
+                "PUNCTUATION" -> AppendMode.PUNCTUATION
+                else -> AppendMode.IDLE
+            }
+        }
+        .stateIn(scope, SharingStarted.Eagerly, AppendMode.IDLE)
+
     suspend fun setMasterEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.MASTER_ENABLED] = enabled }
     }
@@ -65,8 +82,12 @@ class NyaPrefs(private val context: Context) {
         context.dataStore.edit { it[Keys.IS_GLOBAL_MODE] = enabled }
     }
 
+    suspend fun setAppendMode(mode: AppendMode) {
+        context.dataStore.edit { it[Keys.APPEND_MODE] = mode.name }
+    }
+
     fun snapshotBlocking(): Snapshot {
-        val fallback = Snapshot(true, "喵", emptySet(), true)
+        val fallback = Snapshot(true, "喵", emptySet(), true, AppendMode.IDLE)
         val prefs: Preferences? = runCatching {
             runBlocking {
                 withTimeoutOrNull(800) {
@@ -79,7 +100,11 @@ class NyaPrefs(private val context: Context) {
             masterEnabled = prefs[Keys.MASTER_ENABLED] ?: true,
             appendContent = prefs[Keys.APPEND_CONTENT] ?: "喵",
             whitelistPackages = prefs[Keys.WHITELIST_PACKAGES] ?: emptySet(),
-            isGlobalMode = prefs[Keys.IS_GLOBAL_MODE] ?: true
+            isGlobalMode = prefs[Keys.IS_GLOBAL_MODE] ?: true,
+            appendMode = when (prefs[Keys.APPEND_MODE]) {
+                "PUNCTUATION" -> AppendMode.PUNCTUATION
+                else -> AppendMode.IDLE
+            }
         )
     }
 
@@ -87,6 +112,7 @@ class NyaPrefs(private val context: Context) {
         val masterEnabled: Boolean,
         val appendContent: String,
         val whitelistPackages: Set<String>,
-        val isGlobalMode: Boolean
+        val isGlobalMode: Boolean,
+        val appendMode: AppendMode
     )
 }

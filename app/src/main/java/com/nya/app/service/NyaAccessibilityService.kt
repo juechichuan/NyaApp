@@ -10,6 +10,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.os.bundleOf
 import com.nya.app.NyaApplication
+import com.nya.app.data.AppendMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,6 +43,7 @@ class NyaAccessibilityService : AccessibilityService() {
     @Volatile private var masterEnabled = true
     @Volatile private var appendContent = "喵"
     @Volatile private var isGlobalMode = true
+    @Volatile private var appendMode = AppendMode.IDLE
 
     // 停顿追加：用户停止输入 1200ms 后追加
     @Volatile private var pendingAppendRunnable: Runnable? = null
@@ -58,6 +60,7 @@ class NyaAccessibilityService : AccessibilityService() {
         masterEnabled = snap.masterEnabled
         appendContent = snap.appendContent.ifBlank { "喵" }
         isGlobalMode = snap.isGlobalMode
+        appendMode = snap.appendMode
 
         scope.launch {
             (application as NyaApplication).prefs.masterEnabled.collectLatest {
@@ -72,6 +75,11 @@ class NyaAccessibilityService : AccessibilityService() {
         scope.launch {
             (application as NyaApplication).prefs.isGlobalMode.collectLatest {
                 withContext(Dispatchers.Main) { isGlobalMode = it }
+            }
+        }
+        scope.launch {
+            (application as NyaApplication).prefs.appendMode.collectLatest {
+                withContext(Dispatchers.Main) { appendMode = it }
             }
         }
     }
@@ -124,9 +132,12 @@ class NyaAccessibilityService : AccessibilityService() {
 
         val pkg = (event.packageName?.toString() ?: "").takeIf { it.isNotBlank() } ?: return
         if (!isGlobalMode) {
-            // 非全局模式下，只在白名单 App 中生效（保留兼容，默认不会进入此分支）
-            Log.d(TAG, "非全局模式，跳过 $pkg")
-            return
+            // 非全局模式：仅在白名单 App 中生效
+            val whitelist = (application as NyaApplication).prefs.snapshotBlocking().whitelistPackages
+            if (pkg !in whitelist) {
+                Log.d(TAG, "非全局模式且 $pkg 不在白名单，跳过")
+                return
+            }
         }
 
         when (event.eventType) {
@@ -150,7 +161,7 @@ class NyaAccessibilityService : AccessibilityService() {
     }
 
     // ============================
-    //  停顿追加：核心
+    //  追加逻辑：根据 appendMode 分发
     // ============================
     private fun handleTextChanged(event: AccessibilityEvent) {
         val node = event.source ?: findFocusedEditTextMultiWindow() ?: return
@@ -160,39 +171,56 @@ class NyaAccessibilityService : AccessibilityService() {
             return
         }
 
+        when (appendMode) {
+            AppendMode.IDLE -> handleIdleAppend(node)
+            AppendMode.PUNCTUATION -> handlePunctuationAppend(node)
+        }
+    }
+
+    // ============================
+    //  模式 1：停顿追加（用户停顿 1.2s 后追加，继续输入时撤回已追加内容并重新计时）
+    // ============================
+    private fun handleIdleAppend(node: AccessibilityNodeInfo) {
         val currentText = node.text?.toString().orEmpty()
         if (currentText.isBlank()) {
-            // 文本清空了，重置状态
             lastAppendedText = null
             cancelPendingAppend()
             return
         }
 
-        // 如果末尾已经是「喵」，说明刚刚追加过；用户继续打字会触发新的 textChanged，
-        // 这时去掉末尾的「喵」让用户接着编辑原始内容（可选行为：保留也行，看体验）
-        // 这里选择保留策略：用户继续打字就取消上次追加任务，重新计时
-        cancelPendingAppend()
-
-        // 如果当前文本就等于上次追加后的文本，说明用户没再打字，不需要再追加
-        if (currentText == lastAppendedText) {
-            Log.d(TAG, "文本未变化（已是追加后版本），跳过")
+        // 用户继续打字 → 如果上次追加过，先撤回（删除末尾的 appendContent）
+        if (lastAppendedText != null && currentText == lastAppendedText) {
+            // 文本就是上次追加后的版本，用户没继续打字 → 不动
             return
         }
+        // 如果当前文本以 appendContent 结尾且长度大于 appendContent（说明追加过且用户没继续输入），
+        // 也跳过；若用户在追加后又输入了新字符，currentText 不会等于 lastAppendedText
+        cancelPendingAppend()
+        if (currentText.endsWith(appendContent) && currentText.length > appendContent.length) {
+            // 已经以 appendContent 结尾，但用户可能在追加后继续打字
+            // 检查 lastAppendedText 是否匹配 → 不匹配说明用户改了字 → 删掉 appendContent 再重新追加
+            if (currentText != lastAppendedText) {
+                // 用户在追加后又输入了新字符：撤回 appendContent
+                val restored = currentText.removeSuffix(appendContent)
+                if (restored != currentText) {
+                    Log.d(TAG, "用户在追加后继续输入，撤回「$appendContent」")
+                    if (appendTextToNode(node, restored)) {
+                        lastAppendedText = null
+                    }
+                }
+            }
+        }
 
-        // 如果末尾已经是追加内容，跳过
         if (currentText.endsWith(appendContent)) {
             Log.d(TAG, "已经以「$appendContent」结尾，跳过追加")
             return
         }
 
         val editor = node
-        val pendingText = currentText
-        Log.d(TAG, "检测到文本变化，1200ms 后追加「$appendContent」 → 当前: \"$pendingText\"")
-
+        Log.d(TAG, "检测到文本变化，1200ms 后追加「$appendContent」 → 当前: \"$currentText\"")
         val r = Runnable {
             appending = true
             try {
-                // 重新读节点最新文本（用户可能在这 1.2s 内又改了）
                 val latestText = editor.text?.toString().orEmpty()
                 if (latestText.isBlank()) {
                     Log.d(TAG, "计时到达，但文本已清空，跳过")
@@ -218,6 +246,48 @@ class NyaAccessibilityService : AccessibilityService() {
         }
         pendingAppendRunnable = r
         mainHandler.postDelayed(r, 1200)
+    }
+
+    // ============================
+    //  模式 2：标点符号后追加（末尾是标点时立即追加，不打标点不追加）
+    // ============================
+    private fun handlePunctuationAppend(node: AccessibilityNodeInfo) {
+        val currentText = node.text?.toString().orEmpty()
+        if (currentText.isBlank()) {
+            lastAppendedText = null
+            return
+        }
+        if (currentText == lastAppendedText) return
+        if (currentText.endsWith(appendContent)) return
+
+        // 中英文标点集合
+        val punctuations = charArrayOf('。', '，', '！', '？', '；', '：', '、',
+            '.', ',', '!', '?', ';', ':', '~', '～', '…')
+        if (currentText.last() !in punctuations) {
+            Log.d(TAG, "标点模式：末尾非标点（${currentText.last()}），跳过")
+            return
+        }
+
+        // 如果末尾已经是 "标点 + 喵" 的形式（已经追加过），跳过
+        if (currentText.length >= 2 && currentText.endsWith(appendContent) &&
+            currentText[currentText.length - appendContent.length - 1] in punctuations
+        ) return
+
+        val newText = currentText + appendContent
+        appending = true
+        try {
+            val ok = appendTextToNode(node, newText)
+            if (ok) {
+                lastAppendedText = newText
+                Log.i(TAG, "✓ 标点后已追加「$appendContent」→ \"$newText\"")
+            } else {
+                Log.w(TAG, "标点追加失败")
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "标点追加异常", t)
+        } finally {
+            mainHandler.postDelayed({ appending = false }, 200)
+        }
     }
 
     private fun cancelPendingAppend() {

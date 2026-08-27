@@ -114,6 +114,7 @@ private fun NyaAppScreen(
     val masterEnabled by prefs.masterEnabled.collectAsStateWithLifecycle(initialValue = true)
     val appendContent by prefs.appendContent.collectAsStateWithLifecycle(initialValue = "喵")
     val isGlobalMode by prefs.isGlobalMode.collectAsStateWithLifecycle(initialValue = true)
+    val appendMode by prefs.appendMode.collectAsStateWithLifecycle(initialValue = com.nya.app.data.AppendMode.IDLE)
 
     // 刷新状态（Shizuku / 无障碍）
     var shizukuReady by remember { mutableStateOf(shizuku.isShizukuReady()) }
@@ -122,6 +123,10 @@ private fun NyaAppScreen(
 
     // 内容编辑 dialog
     var showContentDialog by remember { mutableStateOf(false) }
+    // 关于抽屉
+    var showAbout by remember { mutableStateOf(false) }
+
+    val scrollState = rememberScrollState()
 
     Scaffold(
         topBar = {
@@ -129,6 +134,11 @@ private fun NyaAppScreen(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("🐱 喵输入法助手", fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showAbout = true }) {
+                        Icon(Icons.Default.Info, contentDescription = "关于")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -142,6 +152,7 @@ private fun NyaAppScreen(
                 .padding(padding)
                 .fillMaxSize()
                 .background(Color(0xFFFFFBFC))
+                .verticalScroll(scrollState)
                 .padding(16.dp)
         ) {
             // ===== 状态卡片 =====
@@ -152,7 +163,8 @@ private fun NyaAppScreen(
                 a11yEnabled = a11yEnabled,
                 serviceRunning = serviceRunning,
                 masterEnabled = masterEnabled,
-                isGlobalMode = isGlobalMode
+                isGlobalMode = isGlobalMode,
+                appendMode = appendMode
             )
 
             Spacer(Modifier.height(20.dp))
@@ -190,13 +202,46 @@ private fun NyaAppScreen(
             }
             HorizontalDivider(color = Color(0x22000000))
 
-            // 全局模式开关（默认开启：对所有App生效，无需选择应用，彻底规避应用列表崩溃问题）
-            SwitchRow(
-                title = "全局模式（对所有App生效）",
-                desc = if (isGlobalMode) "已开启：所有应用输入完毕均自动追加"
-                       else "已关闭：仅对已记录的App生效",
-                checked = isGlobalMode,
-                onCheckedChange = { scope.launch { prefs.setGlobalMode(it) } }
+            // 追加模式（单选）
+            SectionLabel("自动追加模式")
+            Spacer(Modifier.height(4.dp))
+            RadioRow(
+                title = "实时停顿追加",
+                desc = "用户停顿 1.2 秒后自动追加；继续输入时撤回并重新计时",
+                selected = appendMode == com.nya.app.data.AppendMode.IDLE,
+                onClick = { scope.launch { prefs.setAppendMode(com.nya.app.data.AppendMode.IDLE) } }
+            )
+            RadioRow(
+                title = "标点符号后追加",
+                desc = "仅当输入末尾是标点（。，！？等）时立即追加",
+                selected = appendMode == com.nya.app.data.AppendMode.PUNCTUATION,
+                onClick = { scope.launch { prefs.setAppendMode(com.nya.app.data.AppendMode.PUNCTUATION) } }
+            )
+
+            Spacer(Modifier.height(20.dp))
+
+            // ===== 生效范围 =====
+            SectionTitle(text = "生效范围")
+            Spacer(Modifier.height(8.dp))
+            RadioRow(
+                title = "全局生效",
+                desc = "所有 App 输入完毕均自动追加（推荐）",
+                selected = isGlobalMode,
+                onClick = { scope.launch { prefs.setGlobalMode(true) } }
+            )
+            RadioRow(
+                title = "部分应用生效",
+                desc = "仅勾选的应用生效，点击进入选择",
+                selected = !isGlobalMode,
+                onClick = {
+                    scope.launch {
+                        prefs.setGlobalMode(false)
+                        // 跳转到独立应用选择 Activity（规避 Dialog 崩溃）
+                        val i = Intent(ctx, AppPickerActivity::class.java)
+                        i.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        ctx.startActivity(i)
+                    }
+                }
             )
 
             Spacer(Modifier.height(24.dp))
@@ -309,6 +354,11 @@ private fun NyaAppScreen(
             }
         )
     }
+
+    // ---------- 关于抽屉 ----------
+    if (showAbout) {
+        AboutSheet(onDismiss = { showAbout = false })
+    }
 }
 
 // ========================
@@ -331,7 +381,8 @@ private fun StatusGrid(
     a11yEnabled: Boolean,
     serviceRunning: Boolean,
     masterEnabled: Boolean,
-    isGlobalMode: Boolean
+    isGlobalMode: Boolean,
+    appendMode: com.nya.app.data.AppendMode
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -351,11 +402,23 @@ private fun StatusGrid(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("生效模式", color = Color.Gray)
+                Text("生效范围", color = Color.Gray)
                 Text(
-                    if (isGlobalMode) "全局（所有App）" else "白名单模式",
+                    if (isGlobalMode) "全局（所有App）" else "部分应用",
                     fontWeight = FontWeight.Medium,
                     color = if (isGlobalMode) Color(0xFF188038) else Color(0xFFE25C8A)
+                )
+            }
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("追加模式", color = Color.Gray)
+                Text(
+                    if (appendMode == com.nya.app.data.AppendMode.IDLE) "停顿追加" else "标点追加",
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFFE25C8A)
                 )
             }
         }
@@ -411,6 +474,143 @@ private fun SwitchRow(
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
     HorizontalDivider(color = Color(0x22000000))
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.sp,
+        color = Color(0xFFE25C8A),
+        modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)
+    )
+}
+
+@Composable
+private fun RadioRow(
+    title: String,
+    desc: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = androidx.compose.material3.RadioButtonDefaults.colors(
+                selectedColor = Color(0xFFE25C8A)
+            )
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(desc, fontSize = 12.sp, color = Color.Gray)
+        }
+    }
+    HorizontalDivider(color = Color(0x22000000))
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AboutSheet(onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val versionName = remember {
+        runCatching {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+        }.getOrDefault("1.0.0")
+    }
+    val versionCode = remember {
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 28)
+                ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode
+            else
+                @Suppress("DEPRECATION")
+                ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionCode.toLong()
+        }.getOrDefault(0L)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFFFFFBFC)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 36.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // 应用图标
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .background(Color(0xFFFFF5F8), RoundedCornerShape(20.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("🐱", fontSize = 36.sp)
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("喵输入法助手", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            Text(
+                "v$versionName ($versionCode)",
+                fontSize = 13.sp,
+                color = Color.Gray,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider(color = Color(0x22000000))
+            Spacer(Modifier.height(16.dp))
+
+            // 关于应用
+            AboutItem(title = "关于应用", subtitle = "通过 Shizuku 自动在用户输入末尾追加文本（默认「喵」），适配 Android 16 / ColorOS 15")
+            Spacer(Modifier.height(12.dp))
+            AboutItem(title = "应用版本", subtitle = "v$versionName ($versionCode) · targetSDK ${android.os.Build.VERSION.SDK_INT}")
+            Spacer(Modifier.height(12.dp))
+            AboutItem(title = "开源协议", subtitle = "MIT License · 代码可自由使用")
+            Spacer(Modifier.height(20.dp))
+
+            // 赞助
+            SectionLabel("赞助作者")
+            Spacer(Modifier.height(8.dp))
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF5F8)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("如果这个 App 帮助到你", fontWeight = FontWeight.Medium)
+                    Text(
+                        "可以请作者喝杯奶茶 ☕\n开发者邮箱：nya@example.com\n（这里可以替换为你的支付宝/微信收款码图片）",
+                        fontSize = 12.sp,
+                        color = Color.Gray,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutItem(title: String, subtitle: String) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(title, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Text(
+            subtitle,
+            fontSize = 12.sp,
+            color = Color.Gray,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+    }
 }
 
 @Composable

@@ -34,6 +34,14 @@
             </intent-filter>
         </activity>
 
+        <!-- 应用选择 Activity（独立 Activity，规避 Compose Dialog 在 ColorOS 15 上崩溃） -->
+        <activity
+            android:name=".ui.AppPickerActivity"
+            android:exported="false"
+            android:label="选择生效应用"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:theme="@style/Theme.NyaApp" />
+
         <!--
           Shizuku Provider：Shizuku-API 官方要求声明。
           注意：exported=true + permission=INTERACT_ACROSS_USERS_FULL 是官方推荐值，
