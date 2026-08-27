@@ -3,6 +3,7 @@ package com.nya.app.ui
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -40,29 +41,16 @@ class MainActivity : ComponentActivity() {
     private lateinit var shizuku: ShizukuManager
     private lateinit var prefs: NyaPrefs
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        shizuku = (application as NyaApplication).shizuku
-        prefs = (application as NyaApplication).prefs
+    /** 当前启动生命周期内是否已经自动请求过一次（避免 onResume 反复弹） */
+    private var autoRequestedThisLaunch = false
 
-        setContent {
-            MaterialTheme(colorScheme = lightColorScheme(
-                primary = Color(0xFFE91E63),
-                secondary = Color(0xFFF48FB1),
-                tertiary = Color(0xFF7C4DFF)
-            )) {
-                NyaAppScreen(
-                    shizuku = shizuku,
-                    prefs = prefs,
-                    activity = this
-                )
-            }
-        }
+    /** Shizuku 授权结果回调（只注册一次，在 onDestroy 移除） */
+    private val permissionResultListener = rikka.shizuku.Shizuku.OnRequestPermissionResultListener { _, _ ->
+        // 结果到达时刷新界面
+        invalidateUi()
     }
 
-    override fun onResume() {
-        super.onResume()
-        // 刷新 UI：权限/服务状态可能变化
+    private fun invalidateUi() {
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Color(0xFFE91E63),
@@ -71,6 +59,49 @@ class MainActivity : ComponentActivity() {
             )) {
                 NyaAppScreen(shizuku = shizuku, prefs = prefs, activity = this@MainActivity)
             }
+        }
+    }
+
+    private fun autoRequestShizukuPermissionIfNeeded() {
+        // 1) 已授权 -> 不用请求
+        if (shizuku.isShizukuReady()) return
+        // 2) Shizuku / Sui 服务本身没起来 (pingBinder 失败) -> 不用请求，提示留给 UI
+        if (!kotlin.runCatching { rikka.shizuku.Shizuku.pingBinder() }.getOrDefault(false)) return
+        // 3) 避免 onResume 反复请求 -> 每个前台生命周期最多一次
+        if (autoRequestedThisLaunch) return
+        autoRequestedThisLaunch = true
+        // 4) 静默请求，不弹 Toast；失败后用户仍可通过 UI 按钮手动操作
+        Log.d("MainActivity", "autoRequestShizukuPermissionIfNeeded: requesting permission...")
+        shizuku.requestPermission(this) { granted ->
+            Log.d("MainActivity", "autoRequestShizukuPermissionIfNeeded: granted=$granted")
+            invalidateUi()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        shizuku = (application as NyaApplication).shizuku
+        prefs = (application as NyaApplication).prefs
+        // 注册 Shizuku 授权结果监听（官方推荐：监听覆盖授权后外部弹窗关闭的情况）
+        kotlin.runCatching {
+            rikka.shizuku.Shizuku.addRequestPermissionResultListener(permissionResultListener)
+        }
+        invalidateUi()
+        autoRequestShizukuPermissionIfNeeded()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 状态可能变化（用户中途在 Shizuku 授予 / 切回），刷新 UI
+        invalidateUi()
+        // 尝试自动请求（若 onCreate 时服务还没起来，现在可能好了）
+        autoRequestShizukuPermissionIfNeeded()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        kotlin.runCatching {
+            rikka.shizuku.Shizuku.removeRequestPermissionResultListener(permissionResultListener)
         }
     }
 }
