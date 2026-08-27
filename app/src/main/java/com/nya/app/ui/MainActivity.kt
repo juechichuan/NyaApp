@@ -11,7 +11,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -339,21 +341,53 @@ private fun NyaAppScreen(
     }
 
     if (showAppPicker) {
-        // ⚠️ 切到 IO 线程查询应用列表，避免主线程卡顿 -> ANR/闪退（Android 14+ 对主线程 IO 非常敏感）
+        // ⚠️ 查应用列表是 IO 操作，整个协程 try/catch 包死，防止后台异常杀进程 -> "强制返回桌面"
+        var errorText by remember(whitelist) { mutableStateOf<String?>(null) }
         val installed by produceState<List<AppInfo>>(
             initialValue = emptyList(),
             key1 = whitelist
         ) {
-            value = queryUserApps(ctx)
+            runCatching {
+                value = queryUserApps(ctx)
+                errorText = null
+            }.getOrElse { err ->
+                Log.e("AppPicker", "queryUserApps failed", err)
+                value = emptyList()
+                errorText = buildString {
+                    append("读取应用列表失败：\n")
+                    append(err.javaClass.simpleName).append(" : ").append(err.message ?: "无详细信息")
+                    append("\n\n请检查：")
+                    append("\n1) 是否授予本 App「查看所有应用」/ QUERY_ALL_PACKAGES 权限")
+                    append("\n2) 如果仍失败，请关闭手机「隐私保护空数据」类选项")
+                }
+            }
         }
         var selection by remember(whitelist) { mutableStateOf(whitelist.toMutableSet()) }
         var keyword by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { showAppPicker = false },
-            title = { Text("选择生效应用（白名单）") },
-            containerColor = Color.White,
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
+        val filtered = remember(installed, keyword) {
+            if (keyword.isBlank()) installed else installed.filter {
+                it.label.contains(keyword, ignoreCase = true) ||
+                    it.pkg.contains(keyword, ignoreCase = true)
+            }
+        }
+
+        // ⚠️ 不用 AlertDialog 的 text 槽位（放 LazyColumn / 高度内容时在定制ROM上触发高度测量死循环崩溃）
+        //    改成分层的 Card + 自定义滚动 Column，保证布局约束确定（这是修复 1-2 秒后强制返回桌面的关键）
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showAppPicker = false }
+        ) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                modifier = Modifier.fillMaxWidth().wrapContentHeight()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text(
+                        "选择生效应用（白名单）",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 18.sp
+                    )
+                    Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         value = keyword,
                         onValueChange = { keyword = it },
@@ -361,70 +395,122 @@ private fun NyaAppScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(Modifier.height(8.dp))
-                    val filtered = installed.filter {
-                        keyword.isBlank() ||
-                            it.label.contains(keyword, ignoreCase = true) ||
-                            it.pkg.contains(keyword, ignoreCase = true)
-                    }
-                    LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
-                        // 用户安装的应用列表是 IO 查询 produceState 异步拿的，刚开始为 emptyList() -> 不显示闪退
-                        if (installed.isEmpty() && keyword.isBlank()) {
-                            item {
-                                Box(
-                                    modifier = Modifier.fillMaxWidth().padding(30.dp),
-                                    contentAlignment = Alignment.Center
+                    Spacer(Modifier.height(10.dp))
+                    // 固定最大高度，让 Compose 的约束确定，不会触发 infinite maxHeight 死循环
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp, max = 360.dp)
+                    ) {
+                        when {
+                            errorText != null -> {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(4.dp)
                                 ) {
+                                    Text(
+                                        errorText!!,
+                                        color = Color(0xFFD93025),
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                    Spacer(Modifier.height(10.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            // 尝试打开应用详情页，让用户手动开 QUERY_ALL_PACKAGES
+                                            val intent = Intent(
+                                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                Uri.parse("package:" + ctx.packageName)
+                                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            runCatching { ctx.startActivity(intent) }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text("打开权限设置页") }
+                                }
+                            }
+                            installed.isEmpty() -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) { Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     CircularProgressIndicator(color = Color(0xFFE25C8A))
-                                }
+                                    Spacer(Modifier.height(10.dp))
+                                    Text("正在读取应用列表...", color = Color.Gray, fontSize = 12.sp)
+                                }}
                             }
-                        }
-                        items(filtered, key = { it.pkg }) { app ->
-                            val checked = selection.contains(app.pkg)
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        if (checked) selection.remove(app.pkg)
-                                        else selection.add(app.pkg)
+                            filtered.isEmpty() -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize().padding(20.dp),
+                                    contentAlignment = Alignment.Center
+                                ) { Text("没有匹配的应用", color = Color.Gray) }
+                            }
+                            else -> {
+                                // ⚠️ 用 LazyColumn 但放在有确定 maxHeight 的 Box 里，这是根本修复
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(filtered, key = { it.pkg }) { app ->
+                                        val checked = selection.contains(app.pkg)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    if (checked) selection.remove(app.pkg)
+                                                    else selection.add(app.pkg)
+                                                }
+                                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Checkbox(checked = checked, onCheckedChange = {
+                                                if (it) selection.add(app.pkg)
+                                                else selection.remove(app.pkg)
+                                            })
+                                            Spacer(Modifier.width(8.dp))
+                                            androidx.compose.foundation.Image(
+                                                painter = androidx.compose.ui.res.painterResource(
+                                                    android.R.drawable.sym_def_app_icon
+                                                ),
+                                                contentDescription = null,
+                                                modifier = Modifier.size(30.dp)
+                                            )
+                                            Spacer(Modifier.width(10.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(app.label, fontWeight = FontWeight.Medium)
+                                                Text(
+                                                    app.pkg,
+                                                    fontSize = 11.sp,
+                                                    color = Color.Gray
+                                                )
+                                            }
+                                        }
                                     }
-                                    .padding(vertical = 10.dp, horizontal = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(checked = checked, onCheckedChange = {
-                                    if (it) selection.add(app.pkg) else selection.remove(app.pkg)
-                                })
-                                Spacer(Modifier.width(8.dp))
-                                // 图标
-                                androidx.compose.foundation.Image(
-                                    painter = androidx.compose.ui.res.painterResource(
-                                        android.R.drawable.sym_def_app_icon
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(30.dp)
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(app.label, fontWeight = FontWeight.Medium)
-                                    Text(app.pkg, fontSize = 11.sp, color = Color.Gray)
                                 }
                             }
                         }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        TextButton(onClick = { showAppPicker = false }) { Text("取消") }
+                        Spacer(Modifier.weight(1f))
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    prefs.setWhitelistPackages(selection)
+                                    showAppPicker = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFE25C8A),
+                                contentColor = Color.White
+                            )
+                        ) { Text("保存（${selection.size}）") }
                     }
                 }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    scope.launch {
-                        prefs.setWhitelistPackages(selection)
-                        showAppPicker = false
-                    }
-                }) { Text("保存（${selection.size}）") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAppPicker = false }) { Text("取消") }
             }
-        )
+        }
     }
 }
 
