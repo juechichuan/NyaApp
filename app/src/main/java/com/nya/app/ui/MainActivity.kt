@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -25,6 +26,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.nya.app.NyaApplication
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
@@ -305,9 +308,12 @@ private fun NyaAppScreen(
     }
 
     if (showAppPicker) {
-        val installed = remember(whitelist) {
-            // 查询用户应用（非系统）
-            queryUserApps(ctx)
+        // ⚠️ 切到 IO 线程查询应用列表，避免主线程卡顿 -> ANR/闪退（Android 14+ 对主线程 IO 非常敏感）
+        val installed by produceState<List<AppInfo>>(
+            initialValue = emptyList(),
+            key1 = whitelist
+        ) {
+            value = queryUserApps(ctx)
         }
         var selection by remember(whitelist) { mutableStateOf(whitelist.toMutableSet()) }
         var keyword by remember { mutableStateOf("") }
@@ -331,6 +337,17 @@ private fun NyaAppScreen(
                             it.pkg.contains(keyword, ignoreCase = true)
                     }
                     LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
+                        // 用户安装的应用列表是 IO 查询 produceState 异步拿的，刚开始为 emptyList() -> 不显示闪退
+                        if (installed.isEmpty() && keyword.isBlank()) {
+                            item {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().padding(30.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(color = Color(0xFFE25C8A))
+                                }
+                            }
+                        }
                         items(filtered, key = { it.pkg }) { app ->
                             val checked = selection.contains(app.pkg)
                             Row(
@@ -535,31 +552,64 @@ private fun ActionButton(
 // ========================
 private data class AppInfo(val label: String, val pkg: String)
 
-private fun queryUserApps(ctx: android.content.Context): List<AppInfo> {
-    val pm = ctx.packageManager
-    val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-    val list = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-        pm.queryIntentActivities(
-            main,
-            android.content.pm.PackageManager.ResolveInfoFlags.of(
-                android.content.pm.PackageManager.MATCH_ALL.toLong()
-            )
-        )
-    } else {
-        @Suppress("DEPRECATION")
-        pm.queryIntentActivities(main, android.content.pm.PackageManager.MATCH_ALL)
-    }
-    return list
-        .mapNotNull { ri ->
-            val act = ri.activityInfo ?: return@mapNotNull null
-            val pkg = act.applicationInfo.packageName
-            // 排除自己
-            if (pkg == ctx.packageName) return@mapNotNull null
+private suspend fun queryUserApps(ctx: android.content.Context): List<AppInfo> =
+    withContext(Dispatchers.IO) {
+        val pm = ctx.packageManager
+        // 用已安装应用列表 -> 找能启动的 launcher intent（比 queryIntentActivities(ACTION_MAIN) 更稳，
+        // 不会被"同包多入口 / 别名 activity"导致重复，也不会因为 MATCH_ALL 触发某些 ROM 的安全拦截）
+        val installedPkgs: List<android.content.pm.ApplicationInfo> =
             runCatching {
-                val label = ri.loadLabel(pm)?.toString() ?: pkg
-                AppInfo(label, pkg)
-            }.getOrNull()
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    pm.getInstalledApplications(
+                        android.content.pm.PackageManager.ApplicationInfoFlags.of(0L)
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getInstalledApplications(0)
+                }
+            }.getOrDefault(emptyList())
+
+        val results = mutableListOf<AppInfo>()
+        val seenPkgs = HashSet<String>()
+
+        for (appInfo in installedPkgs) {
+            val pkg = appInfo.packageName ?: continue
+            if (pkg == ctx.packageName) continue
+            if (seenPkgs.contains(pkg)) continue
+
+            // 必须要有桌面启动入口，否则对用户而言不是"可以打开发消息"的 App
+            runCatching { pm.getLaunchIntentForPackage(pkg) }.getOrNull()
+                ?: continue
+
+            val isSystem =
+                (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+            val isUpdatedSystem =
+                (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+
+            val label = runCatching {
+                appInfo.loadLabel(pm)?.toString()?.trim()?.ifBlank { null }
+            }.getOrNull() ?: pkg
+
+            // 纯系统 App（没被用户升级过）：名字不规范 / 包名以 com.android.xxx 开头 → 过滤掉
+            // （比如 com.android.settings 虽然有入口，但用户一般不会在里面发消息）
+            if (isSystem && !isUpdatedSystem) {
+                // 但保留主流常用系统 App：比如信息、拨号、日历、相机、便签等
+                val whitelistedSystem = listOf(
+                    "com.android.mms",
+                    "com.google.android.apps.messaging",
+                    "com.android.calendar",
+                    "com.google.android.calendar"
+                )
+                if (pkg !in whitelistedSystem &&
+                    (pkg.startsWith("com.android.") ||
+                            pkg.startsWith("com.google.android.gms") ||
+                            pkg.startsWith("android."))
+                ) continue
+            }
+            if (label.isEmpty()) continue
+            seenPkgs.add(pkg)
+            results.add(AppInfo(label, pkg))
         }
-        .distinctBy { it.pkg }
-        .sortedBy { it.label.lowercase() }
-}
+        results.sortBy { it.label.lowercase() }
+        results
+    }
