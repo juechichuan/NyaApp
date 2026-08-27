@@ -2,12 +2,15 @@ package com.nya.app.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.graphics.Path
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
 import androidx.core.os.bundleOf
 import com.nya.app.NyaApplication
 import com.nya.app.data.AppendMode
@@ -206,18 +209,27 @@ class NyaAccessibilityService : AccessibilityService() {
      */
     private fun findAndHandleWechatEditor() {
         val windows = runCatching { this.windows }.getOrDefault(emptyList())
+        var dumpCount = 0
         for (w in windows) {
             val root = w.root ?: continue
             val queue = ArrayDeque<AccessibilityNodeInfo>()
             queue.add(root)
             var count = 0
-            while (queue.isNotEmpty() && count < 500) {
+            while (queue.isNotEmpty() && count < 800) {
                 count++
+                dumpCount++
                 val n = queue.removeFirst()
+                if (dumpCount <= 20) {
+                    // 前20个节点打印调试信息，方便定位微信 UI 结构
+                    val cls = n.className?.toString().orEmpty()
+                    val txt = safeGetText(n).take(30)
+                    val vid = n.viewIdResourceName.orEmpty()
+                    Log.v(TAG, "微信遍历[$dumpCount]: cls=$cls viewId=$vid text=$txt focused=${n.isFocused} editable=${n.isEditable}")
+                }
                 if (isWechatEditable(n) && !isPasswordInput(n)) {
-                    val text = n.text?.toString().orEmpty()
+                    val text = safeGetText(n)
                     if (text.isNotEmpty() || n.isFocused) {
-                        Log.i(TAG, "微信兜底：找到疑似输入框 className=${n.className} textLen=${text.length} focused=${n.isFocused}")
+                        Log.i(TAG, "微信兜底：找到疑似输入框 className=${n.className} textLen=${text.length} focused=${n.isFocused} viewId=${n.viewIdResourceName}")
                         when (appendMode) {
                             AppendMode.IDLE -> handleIdleAppend(n)
                             AppendMode.PUNCTUATION -> handlePunctuationAppend(n)
@@ -236,7 +248,7 @@ class NyaAccessibilityService : AccessibilityService() {
     //  模式 1：停顿追加（用户停顿 1.2s 后追加，继续输入时撤回已追加内容并重新计时）
     // ============================
     private fun handleIdleAppend(node: AccessibilityNodeInfo) {
-        val currentText = node.text?.toString().orEmpty()
+        val currentText = safeGetText(node)
         if (currentText.isBlank()) {
             lastAppendedText = null
             cancelPendingAppend()
@@ -259,7 +271,7 @@ class NyaAccessibilityService : AccessibilityService() {
                 val restored = currentText.removeSuffix(appendContent)
                 if (restored != currentText) {
                     Log.d(TAG, "用户在追加后继续输入，撤回「$appendContent」")
-                    if (appendTextToNode(node, restored)) {
+                    if (appendTextToNode(node, restored, isWechatPkg(node))) {
                         lastAppendedText = null
                     }
                 }
@@ -276,7 +288,7 @@ class NyaAccessibilityService : AccessibilityService() {
         val r = Runnable {
             appending = true
             try {
-                val latestText = editor.text?.toString().orEmpty()
+                val latestText = safeGetText(editor)
                 if (latestText.isBlank()) {
                     Log.d(TAG, "计时到达，但文本已清空，跳过")
                     return@Runnable
@@ -286,12 +298,12 @@ class NyaAccessibilityService : AccessibilityService() {
                     return@Runnable
                 }
                 val newText = latestText + appendContent
-                val ok = appendTextToNode(editor, newText)
+                val ok = appendTextToNode(editor, newText, isWechatPkg(node))
                 if (ok) {
                     lastAppendedText = newText
                     Log.i(TAG, "✓ 已追加「$appendContent」→ \"$newText\"")
                 } else {
-                    Log.w(TAG, "追加文本失败（performAction 返回 false）")
+                    Log.w(TAG, "追加文本失败（所有方案均返回 false）")
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "追加文本异常", t)
@@ -307,7 +319,7 @@ class NyaAccessibilityService : AccessibilityService() {
     //  模式 2：标点符号后追加（末尾是标点时 0.7s 后追加，继续输入则取消）
     // ============================
     private fun handlePunctuationAppend(node: AccessibilityNodeInfo) {
-        val currentText = node.text?.toString().orEmpty()
+        val currentText = safeGetText(node)
         if (currentText.isBlank()) {
             lastAppendedText = null
             cancelPendingAppend()
@@ -337,7 +349,7 @@ class NyaAccessibilityService : AccessibilityService() {
         val r = Runnable {
             appending = true
             try {
-                val latestText = editor.text?.toString().orEmpty()
+                val latestText = safeGetText(editor)
                 if (latestText.isBlank()) {
                     Log.d(TAG, "标点模式：计时到达，文本已清空，跳过")
                     return@Runnable
@@ -353,7 +365,7 @@ class NyaAccessibilityService : AccessibilityService() {
                     return@Runnable
                 }
                 val newText = latestText + appendContent
-                val ok = appendTextToNode(editor, newText)
+                val ok = appendTextToNode(editor, newText, isWechatPkg(node))
                 if (ok) {
                     lastAppendedText = newText
                     Log.i(TAG, "✓ 标点后已追加「$appendContent」→ \"$newText\"")
@@ -387,16 +399,39 @@ class NyaAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 安全读取节点文本：先 refresh() 再读，
+     * 微信自定义 View 常常需要 refresh 才能拿到最新文本，否则会读到旧值或空串。
+     */
+    private fun safeGetText(node: AccessibilityNodeInfo): String {
+        runCatching { node.refresh() }
+        val t = node.text?.toString()
+        if (!t.isNullOrEmpty()) return t
+        // 再兜底：contentDescription 有时包含文本（极少数 App）
+        val cd = node.contentDescription?.toString()
+        if (!cd.isNullOrEmpty() && cd.length <= 500) return cd
+        return ""
+    }
+
+    /**
      * 微信自定义 View 识别：不依赖标准 EditText / isEditable 属性
      * 放宽条件：inputType > 0 且 isEnabled isFocusable，或者可点击且可写入文本的容器
      */
     private fun isWechatEditable(node: AccessibilityNodeInfo): Boolean {
         if (isEditable(node)) return true
         val cls = node.className?.toString().orEmpty()
-        // 微信已知的自定义输入框类名（不同版本不同）
+        // 微信已知的自定义输入框类名（不同版本不同，覆盖新老版本）
         if (cls.startsWith("com.tencent.mm.") && cls.contains("edit", ignoreCase = true)) return true
         if (cls.startsWith("com.tencent.mm.") && cls.contains("text", ignoreCase = true) && cls.contains("edit", ignoreCase = true)) return true
+        if (cls.startsWith("com.tencent.mm.ui.chatting.") && cls.contains("input", ignoreCase = true)) return true
         if (cls.contains("InputView", ignoreCase = true)) return true
+        if (cls.contains("ChattingUIFragment", ignoreCase = true)) return false // 容器，跳过
+        if (cls.contains("RecordView", ignoreCase = true)) return false // 语音，跳过
+        // ViewId 识别：微信输入框的 viewId 常带 input/editor/chat
+        val vid = node.viewIdResourceName.orEmpty()
+        if (vid.contains("input", ignoreCase = true) || vid.contains("editor", ignoreCase = true) ||
+            vid.contains("chat", ignoreCase = true) && vid.contains("text", ignoreCase = true)) {
+            if (node.isEnabled && node.isFocusable) return true
+        }
         // 通用兜底：有 inputType (TYPE_CLASS_TEXT) 且 enabled/focusable
         val inputType = runCatching { node.inputType }.getOrDefault(0)
         if (inputType > 0) {
@@ -405,8 +440,8 @@ class NyaAccessibilityService : AccessibilityService() {
             if (isTextLike && node.isEnabled && node.isFocusable) return true
         }
         // 兜底：可点击 + 可选中 + 有文本（微信有时把输入框伪装成普通容器）
-        if (node.isClickable && node.isFocusable && node.isEnabled &&
-            (node.text?.toString()?.isNotEmpty() == true || node.isFocused)) return true
+        if (node.isClickable && node.isFocusable && node.isEnabled && node.isVisibleToUser &&
+            (safeGetText(node).isNotEmpty() || node.isFocused)) return true
         return false
     }
 
@@ -474,25 +509,28 @@ class NyaAccessibilityService : AccessibilityService() {
             }
         if (isPasswordInput(editor)) return
 
-        val currentText = editor.text?.toString().orEmpty()
+        val currentText = safeGetText(editor)
         if (currentText.isBlank() || currentText.endsWith(appendContent)) return
 
-        val isWechat = event.packageName?.toString() == "com.tencent.mm"
+        val isWechat = isWechatPkg(editor) || event.packageName?.toString() == "com.tencent.mm"
         if (isWechat) Log.i(TAG, "微信 fallback：点击发送按钮，尝试前置追加")
 
         appending = true
         try {
             val newText = currentText + appendContent
-            appendTextToNode(editor, newText)
+            appendTextToNode(editor, newText, isWechat)
             lastAppendedText = newText
             Log.i(TAG, "✓ fallback 已追加「$appendContent」→ \"$newText\"")
         } catch (t: Throwable) {
             Log.e(TAG, "fallback 追加异常", t)
         } finally {
             // 微信场景：延长 appending 时间，确保写入完成后再放行
-            mainHandler.postDelayed({ appending = false }, if (isWechat) 400 else 300)
+            mainHandler.postDelayed({ appending = false }, if (isWechat) 500 else 300)
         }
     }
+
+    private fun isWechatPkg(node: AccessibilityNodeInfo): Boolean =
+        runCatching { node.packageName?.toString() }.getOrNull() == "com.tencent.mm"
 
     // ============================
     //  辅助方法
@@ -575,49 +613,221 @@ class NyaAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 往 EditText 写入文本：三层 fallback
-     *  1. ACTION_FOCUS + ACTION_SET_TEXT（标准 EditText，微信主输入框响应此 API）
-     *  2. 全选 + 剪贴板 ACTION_PASTE（兼容拦截 setText 的输入框）
-     *  3. 返回 false，让上层 fallback 路径（如 commitText via IME）再尝试
+     * 往输入框写入文本：四层 fallback（** 微信场景优先剪贴板 **）
      *
-     * 微信适配要点：必须先 ACTION_FOCUS 再 SET_TEXT，否则部分版本不响应。
+     * 顺序（微信 isWechat=true 时调换 1、2 优先级）：
+     *   1. ACTION_SET_TEXT（标准 App 首选）
+     *   2. 全选 + 剪贴板 ACTION_PASTE（微信首选，绝大多数版本都能过）
+     *   3. 光标移到末尾：ACTION_SET_SELECTION(end) + 剪贴板 PASTE（追加写入，避免全选闪烁）
+     *   4. dispatchGesture 长按节点，触发系统"粘贴"弹窗（终极兜底，绕过所有 API 拦截）
+     *
+     * 最终都失败返回 false。
      */
-    private fun appendTextToNode(node: AccessibilityNodeInfo, newText: String): Boolean {
-        // 步骤 1：先 focus 输入框（微信等 App 要求焦点后才接受 setText）
+    private fun appendTextToNode(node: AccessibilityNodeInfo, newText: String, isWechat: Boolean): Boolean {
+        // 步骤 0：先 focus（微信等 App 要求焦点后才接受写入）
         runCatching { node.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
+        runCatching { node.refresh() }
 
-        // 步骤 2：尝试 ACTION_SET_TEXT
-        val args = bundleOf(
-            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE to newText
-        )
-        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        if (ok) {
-            Log.d(TAG, "ACTION_SET_TEXT 成功")
-            return true
+        // 组装方案顺序
+        val strategies: List<Pair<String, () -> Boolean>> = if (isWechat) {
+            // 微信：优先剪贴板，再试 SET_TEXT
+            listOf(
+                "剪贴板_全选粘贴" to { tryClipboardSelectAllPaste(node, newText) },
+                "ACTION_SET_TEXT" to { tryActionSetText(node, newText) },
+                "剪贴板_光标后追加" to { tryClipboardAppendAtEnd(node, newText) },
+                "手势_长按粘贴" to { tryGestureLongPressPaste(node, newText) }
+            )
+        } else {
+            // 普通 App：标准流程
+            listOf(
+                "ACTION_SET_TEXT" to { tryActionSetText(node, newText) },
+                "剪贴板_全选粘贴" to { tryClipboardSelectAllPaste(node, newText) },
+                "剪贴板_光标后追加" to { tryClipboardAppendAtEnd(node, newText) },
+                "手势_长按粘贴" to { tryGestureLongPressPaste(node, newText) }
+            )
         }
 
-        // 步骤 3：剪贴板 + ACTION_PASTE 兜底
-        Log.w(TAG, "ACTION_SET_TEXT 失败，尝试剪贴板粘贴")
-        return try {
-            val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("nya", newText))
-            // 全选原文本再粘贴
-            val text = node.text?.toString().orEmpty()
+        for ((name, block) in strategies) {
+            try {
+                if (block()) {
+                    Log.i(TAG, "写入成功: 策略=$name")
+                    // 验证：120ms 后重读文本核对是否真的写入成功
+                    mainHandler.postDelayed({
+                        runCatching {
+                            val verified = safeGetText(node)
+                            if (verified == newText) {
+                                Log.i(TAG, "写入验证通过 ✓ finalText=$verified")
+                            } else {
+                                Log.w(TAG, "写入验证失败 ✗ 期望=\"$newText\" 实际=\"$verified\"")
+                            }
+                        }
+                    }, 180)
+                    return true
+                } else {
+                    Log.d(TAG, "策略 $name 返回 false，尝试下一策略")
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "策略 $name 异常", t)
+            }
+        }
+        return false
+    }
+
+    // —— 写入策略 1：ACTION_SET_TEXT ——
+    private fun tryActionSetText(node: AccessibilityNodeInfo, newText: String): Boolean {
+        val args = bundleOf(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE to newText)
+        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (!ok) return false
+        // 返回 true 不代表真写入，微信常假阳性；调用方会异步验证
+        return true
+    }
+
+    // —— 写入策略 2：剪贴板 + 全选 + PASTE ——
+    private fun tryClipboardSelectAllPaste(node: AccessibilityNodeInfo, newText: String): Boolean {
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("nya", newText))
+
+        // 全选现有文本再粘贴，等价于覆盖写入
+        val curLen = safeGetText(node).length
+        node.performAction(
+            AccessibilityNodeInfo.ACTION_SET_SELECTION,
+            bundleOf(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT to 0,
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT to curLen
+            )
+        )
+        // 稍等再粘贴
+        Thread.sleep(30)
+        val pasted = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+        if (!pasted) {
+            // 再试：取消选择 → 光标放到末尾 → 再次粘贴
+            Thread.sleep(20)
             node.performAction(
                 AccessibilityNodeInfo.ACTION_SET_SELECTION,
                 bundleOf(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT to 0,
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT to text.length
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT to curLen,
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT to curLen
                 )
             )
-            mainHandler.postDelayed({
-                runCatching { node.performAction(AccessibilityNodeInfo.ACTION_PASTE) }
-            }, 15)
-            true
-        } catch (t: Throwable) {
-            Log.e(TAG, "剪贴板方案失败", t)
-            false
+            return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
         }
+        return true
+    }
+
+    // —— 写入策略 3：剪贴板 + 光标放末尾 + PASTE（追加，非覆盖）——
+    private fun tryClipboardAppendAtEnd(node: AccessibilityNodeInfo, newText: String): Boolean {
+        val cur = safeGetText(node)
+        // 只追加差异部分（减少粘贴内容）
+        val delta = if (newText.startsWith(cur) && newText.length > cur.length) {
+            newText.substring(cur.length)
+        } else newText
+
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("nya", delta))
+
+        // 光标放末尾
+        node.performAction(
+            AccessibilityNodeInfo.ACTION_SET_SELECTION,
+            bundleOf(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT to cur.length,
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT to cur.length
+            )
+        )
+        Thread.sleep(25)
+        return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    }
+
+    // —— 写入策略 4：dispatchGesture 长按节点，触发系统粘贴菜单 ——
+    // 当所有无障碍 API 都被 App 拦截时，用手势模拟手指长按，几乎 100% 能弹出"粘贴"菜单
+    private fun tryGestureLongPressPaste(node: AccessibilityNodeInfo, newText: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+
+        // 把内容先放剪贴板
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("nya", newText))
+
+        val rect = android.graphics.Rect()
+        runCatching { node.getBoundsInScreen(rect) }.onFailure { return false }
+        if (rect.isEmpty()) return false
+
+        val cx = rect.centerX().toFloat()
+        val cy = rect.centerY().toFloat()
+        Log.i(TAG, "手势兜底：长按坐标 ($cx, $cy) 触发粘贴")
+
+        // 方案 A：长按输入框，让弹出菜单出现，系统菜单的"粘贴"由用户点击？
+        // 不行，必须全自动。改为：长按 + 然后在"粘贴"按钮的预期位置再点一下
+        //
+        // 由于"粘贴"菜单位置不确定，改为更可靠的方案：
+        //   1) 长按输入框弹出菜单
+        //   2) 菜单中通常第一个选项就是"粘贴"/"全选"，这里改用更稳妥的方式：
+        //      通过 gesture 长按 500ms 释放，菜单弹出概率最高
+        //   3) 400ms 后再遍历当前窗口，找"粘贴"文案的按钮并点击
+
+        // 长按轨迹（Path：单指压下→停留 500ms→抬起）
+        val pressPath = Path().apply { moveTo(cx, cy) }
+        val longPressStroke = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.accessibilityservice.GestureDescription.StrokeDescription(
+                pressPath, 0, 600, true
+            )
+        } else {
+            android.accessibilityservice.GestureDescription.StrokeDescription(
+                pressPath, 0, 600
+            )
+        }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(longPressStroke)
+            .build()
+
+        var dispatched = false
+        dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                Log.i(TAG, "长按手势完成")
+                // 延迟 550ms 后在窗口里找"粘贴"按钮点击
+                mainHandler.postDelayed({
+                    runCatching {
+                        clickPasteMenuItemInWindows()
+                    }
+                }, 550)
+            }
+            override fun onCancelled(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                Log.w(TAG, "长按手势被取消")
+            }
+        }, null)
+
+        if (!dispatched) {
+            Log.w(TAG, "dispatchGesture 返回 false，手势无法下发")
+            return false
+        }
+        // 这里无法同步知道结果，返回 true 让调用方认为已处理（会有异步验证日志）
+        return true
+    }
+
+    /** 在当前所有窗口中查找文案/描述含"粘贴"的节点并点击 */
+    private fun clickPasteMenuItemInWindows() {
+        val windows = runCatching { this.windows }.getOrDefault(emptyList())
+        for (w in windows) {
+            val root = w.root ?: continue
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var count = 0
+            while (queue.isNotEmpty() && count < 400) {
+                count++
+                val n = queue.removeFirst()
+                val t = n.text?.toString().orEmpty()
+                val d = n.contentDescription?.toString().orEmpty()
+                if (n.isVisibleToUser && n.isClickable && (t == "粘贴" || d == "粘贴" ||
+                            t.equals("Paste", ignoreCase = true) || d.equals("Paste", ignoreCase = true) ||
+                            t.contains("粘贴") || d.contains("粘贴"))) {
+                    Log.i(TAG, "找到粘贴按钮，点击: text=$t desc=$d")
+                    n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return
+                }
+                for (i in 0 until n.childCount) {
+                    n.getChild(i)?.let { queue.add(it) }
+                }
+            }
+        }
+        Log.w(TAG, "未找到粘贴菜单项，可能菜单未弹出或菜单位置异常")
     }
 
     companion object {
