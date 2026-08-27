@@ -140,20 +140,35 @@ class NyaAccessibilityService : AccessibilityService() {
             }
         }
 
+        val isWechat = pkg == "com.tencent.mm"
+
         when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> handleTextChanged(event)
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                if (!handleTextChanged(event) && isWechat) {
+                    // 微信兜底：标准路径失败（如自定义 View 不触发 isEditable）
+                    // 直接找窗口里任意含可写文本的节点，不管是不是 EditText
+                    Log.i(TAG, "微信：标准 TEXT_CHANGED 未命中，走兜底查找")
+                    findAndHandleWechatEditor()
+                }
+            }
             AccessibilityEvent.TYPE_VIEW_FOCUSED -> maybeCacheFocusedEditor(event)
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 // 切页面，清掉缓存的 EditText 与待追加任务
                 cancelPendingAppend()
                 lastFocusedEditor = null
                 lastAppendedText = null
+                if (isWechat) Log.i(TAG, "微信：窗口变化，重置状态")
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 // 微信/QQ 在某些版本不主动发 TYPE_VIEW_TEXT_CHANGED，
-                // 但会发 WINDOW_CONTENT_CHANGED；含文本变化时也尝试追加
-                if (event.text?.isNotEmpty() == true || event.source?.text?.isNotEmpty() == true) {
-                    handleTextChanged(event)
+                // 但会发 WINDOW_CONTENT_CHANGED；微信场景下只要内容变化就尝试处理
+                val hasTextChange = event.text?.isNotEmpty() == true ||
+                                    event.source?.text?.isNotEmpty() == true ||
+                                    (event.contentChangeTypes and AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT != 0)
+                if (hasTextChange || isWechat) {
+                    if (!handleTextChanged(event) && isWechat) {
+                        findAndHandleWechatEditor()
+                    }
                 }
             }
             AccessibilityEvent.TYPE_VIEW_CLICKED -> handleButtonClickedAsFallback(event)
@@ -162,18 +177,58 @@ class NyaAccessibilityService : AccessibilityService() {
 
     // ============================
     //  追加逻辑：根据 appendMode 分发
+    //  返回：true=已处理（不管成功与否，代表至少找到了可编辑节点）；false=没找到任何可编辑节点
     // ============================
-    private fun handleTextChanged(event: AccessibilityEvent) {
-        val node = event.source ?: findFocusedEditTextMultiWindow() ?: return
-        if (!isEditable(node)) return
+    private fun handleTextChanged(event: AccessibilityEvent): Boolean {
+        val source = event.source
+        val node = source?.takeIf { isEditable(it) }
+            ?: source?.takeIf { isWechatEditable(it) }
+            ?: findFocusedEditTextMultiWindow()
+            ?: lastFocusedEditor
+            ?: return false
+
         if (isPasswordInput(node)) {
             Log.d(TAG, "密码/安全输入框，跳过")
-            return
+            return true
         }
 
         when (appendMode) {
             AppendMode.IDLE -> handleIdleAppend(node)
             AppendMode.PUNCTUATION -> handlePunctuationAppend(node)
+        }
+        return true
+    }
+
+    /**
+     * 微信兜底：在整个视图树里找一个"看起来像输入框"的节点并处理。
+     * 微信聊天界面的输入框有时是自定义 View（非标准 EditText），
+     * isEditable 返回 false，所以这里放宽条件。
+     */
+    private fun findAndHandleWechatEditor() {
+        val windows = runCatching { this.windows }.getOrDefault(emptyList())
+        for (w in windows) {
+            val root = w.root ?: continue
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var count = 0
+            while (queue.isNotEmpty() && count < 500) {
+                count++
+                val n = queue.removeFirst()
+                if (isWechatEditable(n) && !isPasswordInput(n)) {
+                    val text = n.text?.toString().orEmpty()
+                    if (text.isNotEmpty() || n.isFocused) {
+                        Log.i(TAG, "微信兜底：找到疑似输入框 className=${n.className} textLen=${text.length} focused=${n.isFocused}")
+                        when (appendMode) {
+                            AppendMode.IDLE -> handleIdleAppend(n)
+                            AppendMode.PUNCTUATION -> handlePunctuationAppend(n)
+                        }
+                        return
+                    }
+                }
+                for (i in 0 until n.childCount) {
+                    n.getChild(i)?.let { queue.add(it) }
+                }
+            }
         }
     }
 
@@ -325,10 +380,34 @@ class NyaAccessibilityService : AccessibilityService() {
     // ============================
     private fun maybeCacheFocusedEditor(event: AccessibilityEvent) {
         val node = event.source ?: return
-        if (isEditable(node)) {
+        if (isEditable(node) || isWechatEditable(node)) {
             lastFocusedEditor = node
-            Log.d(TAG, "缓存焦点 EditText: ${node.className} viewId=${node.viewIdResourceName}")
+            Log.i(TAG, "缓存焦点输入框: className=${node.className} editable=${isEditable(node)} wechatEditable=${isWechatEditable(node)} viewId=${node.viewIdResourceName}")
         }
+    }
+
+    /**
+     * 微信自定义 View 识别：不依赖标准 EditText / isEditable 属性
+     * 放宽条件：inputType > 0 且 isEnabled isFocusable，或者可点击且可写入文本的容器
+     */
+    private fun isWechatEditable(node: AccessibilityNodeInfo): Boolean {
+        if (isEditable(node)) return true
+        val cls = node.className?.toString().orEmpty()
+        // 微信已知的自定义输入框类名（不同版本不同）
+        if (cls.startsWith("com.tencent.mm.") && cls.contains("edit", ignoreCase = true)) return true
+        if (cls.startsWith("com.tencent.mm.") && cls.contains("text", ignoreCase = true) && cls.contains("edit", ignoreCase = true)) return true
+        if (cls.contains("InputView", ignoreCase = true)) return true
+        // 通用兜底：有 inputType (TYPE_CLASS_TEXT) 且 enabled/focusable
+        val inputType = runCatching { node.inputType }.getOrDefault(0)
+        if (inputType > 0) {
+            val textMask = InputType.TYPE_MASK_CLASS
+            val isTextLike = (inputType and textMask) == InputType.TYPE_CLASS_TEXT
+            if (isTextLike && node.isEnabled && node.isFocusable) return true
+        }
+        // 兜底：可点击 + 可选中 + 有文本（微信有时把输入框伪装成普通容器）
+        if (node.isClickable && node.isFocusable && node.isEnabled &&
+            (node.text?.toString()?.isNotEmpty() == true || node.isFocused)) return true
+        return false
     }
 
     /**
@@ -340,7 +419,7 @@ class NyaAccessibilityService : AccessibilityService() {
         // 1) 优先用系统焦点 API
         runCatching {
             val focused = this.findFocus(1) // FOCUS_INPUT
-            if (focused != null && isEditable(focused)) return focused
+            if (focused != null && (isEditable(focused) || isWechatEditable(focused))) return focused
         }
         // 2) 遍历所有 windows，找包含焦点 EditText 的窗口
         runCatching {
@@ -350,7 +429,7 @@ class NyaAccessibilityService : AccessibilityService() {
                 // 找该窗口下 isFocused=true 的 EditText
                 val found = findFocusedEditText(root)
                 if (found != null) {
-                    Log.d(TAG, "在 window(${w.type}) 中找到焦点 EditText")
+                    Log.d(TAG, "在 window(${w.type}) 中找到焦点输入框")
                     return found
                 }
             }
@@ -359,7 +438,7 @@ class NyaAccessibilityService : AccessibilityService() {
         return findFocusedEditText(rootInActiveWindow)
     }
 
-    /** 在单个 root 下查找焦点 EditText（优先 isFocused，否则任意 editable） */
+    /** 在单个 root 下查找焦点输入框（优先 isFocused，否则任意 editable / 微信自定义） */
     private fun findFocusedEditText(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         root ?: return null
         val queue = ArrayDeque<AccessibilityNodeInfo>()
@@ -367,7 +446,7 @@ class NyaAccessibilityService : AccessibilityService() {
         var firstEditable: AccessibilityNodeInfo? = null
         while (queue.isNotEmpty()) {
             val n = queue.removeFirst()
-            if (isEditable(n)) {
+            if (isEditable(n) || isWechatEditable(n)) {
                 if (n.isFocused) return n
                 if (firstEditable == null) firstEditable = n
             }
@@ -398,6 +477,9 @@ class NyaAccessibilityService : AccessibilityService() {
         val currentText = editor.text?.toString().orEmpty()
         if (currentText.isBlank() || currentText.endsWith(appendContent)) return
 
+        val isWechat = event.packageName?.toString() == "com.tencent.mm"
+        if (isWechat) Log.i(TAG, "微信 fallback：点击发送按钮，尝试前置追加")
+
         appending = true
         try {
             val newText = currentText + appendContent
@@ -407,7 +489,8 @@ class NyaAccessibilityService : AccessibilityService() {
         } catch (t: Throwable) {
             Log.e(TAG, "fallback 追加异常", t)
         } finally {
-            mainHandler.postDelayed({ appending = false }, 300)
+            // 微信场景：延长 appending 时间，确保写入完成后再放行
+            mainHandler.postDelayed({ appending = false }, if (isWechat) 400 else 300)
         }
     }
 
