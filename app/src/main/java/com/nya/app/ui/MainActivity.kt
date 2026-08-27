@@ -73,6 +73,8 @@ private fun NyaAppScreen(
     val appendContent by prefs.appendContent.collectAsStateWithLifecycle(initialValue = "喵")
     val isGlobalMode by prefs.isGlobalMode.collectAsStateWithLifecycle(initialValue = true)
     val appendMode by prefs.appendMode.collectAsStateWithLifecycle(initialValue = AppendMode.IDLE)
+    val idleDelayMs by prefs.idleDelayMs.collectAsStateWithLifecycle(initialValue = 1200)
+    val punctuationDelayMs by prefs.punctuationDelayMs.collectAsStateWithLifecycle(initialValue = 700)
 
     var a11yEnabled by remember { mutableStateOf(isAccessibilityServiceEnabled(ctx)) }
     val serviceRunning = NyaAccessibilityService.isRunning()
@@ -155,16 +157,40 @@ private fun NyaAppScreen(
             Spacer(Modifier.height(4.dp))
             RadioRow(
                 title = "实时停顿追加",
-                desc = "用户停顿 1.2 秒后自动追加；继续输入时撤回并重新计时",
+                desc = "用户停顿 ${String.format("%.1f", idleDelayMs.toFloat()/1000)} 秒后自动追加；继续输入时撤回并重新计时",
                 selected = appendMode == AppendMode.IDLE,
                 onClick = { scope.launch { prefs.setAppendMode(AppendMode.IDLE) } }
             )
+            if (appendMode == AppendMode.IDLE) {
+                DelaySliderCard(
+                    label = "停顿追加延迟",
+                    seconds = idleDelayMs.toFloat() / 1000,
+                    minSeconds = 0.3f,
+                    maxSeconds = 5.0f,
+                    onSecondsChanged = { s ->
+                        scope.launch { prefs.setIdleDelayMs((s * 1000).toInt()) }
+                    }
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             RadioRow(
                 title = "标点符号后追加",
-                desc = "仅当输入末尾是标点（。，！？等）时 0.7 秒后追加",
+                desc = "仅当输入末尾是标点（。，！？等）时 ${String.format("%.1f", punctuationDelayMs.toFloat()/1000)} 秒后追加",
                 selected = appendMode == AppendMode.PUNCTUATION,
                 onClick = { scope.launch { prefs.setAppendMode(AppendMode.PUNCTUATION) } }
             )
+            if (appendMode == AppendMode.PUNCTUATION) {
+                DelaySliderCard(
+                    label = "标点追加延迟",
+                    seconds = punctuationDelayMs.toFloat() / 1000,
+                    minSeconds = 0.2f,
+                    maxSeconds = 5.0f,
+                    onSecondsChanged = { s ->
+                        scope.launch { prefs.setPunctuationDelayMs((s * 1000).toInt()) }
+                    }
+                )
+                Spacer(Modifier.height(6.dp))
+            }
 
             Spacer(Modifier.height(20.dp))
 
@@ -496,6 +522,86 @@ private fun SectionLabel(text: String) {
         color = Color(0xFFE25C8A),
         modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)
     )
+}
+
+/**
+ * 延迟时间滑块卡片：显示当前秒数 + 可拖动的 Slider
+ */
+@Composable
+private fun DelaySliderCard(
+    label: String,
+    seconds: Float,
+    minSeconds: Float,
+    maxSeconds: Float,
+    onSecondsChanged: (Float) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF5F8)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    label,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.sp,
+                    color = Color(0xFF5D4037)
+                )
+                Text(
+                    "${String.format("%.1f", seconds)} 秒",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    color = Color(0xFFE25C8A)
+                )
+            }
+            Slider(
+                value = seconds,
+                valueRange = minSeconds..maxSeconds,
+                onValueChange = onSecondsChanged,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFFE25C8A),
+                    activeTrackColor = Color(0xFFF48FB1),
+                    inactiveTrackColor = Color(0x33E91E63)
+                ),
+                modifier = Modifier.padding(horizontal = 2.dp)
+            )
+            // 快捷预设按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                val presets = when {
+                    maxSeconds <= 3f && minSeconds < 0.4f -> floatArrayOf(0.5f, 1.0f, 1.5f)
+                    else -> floatArrayOf(0.5f, 1.0f, 2.0f, 3.0f)
+                }
+                presets.forEach { preset ->
+                    AssistChip(
+                        onClick = { onSecondsChanged(preset) },
+                        label = {
+                            Text(
+                                if (preset < 1) "${(preset * 1000).toInt()}ms" else "${(preset.toInt())}s",
+                                fontSize = 11.sp
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (kotlin.math.abs(seconds - preset) < 0.05f) Color(0xFFFFCDD2) else Color.White,
+                            labelColor = Color(0xFF5D4037)
+                        ),
+                        border = AssistChipDefaults.assistChipBorder(
+                            borderColor = Color(0x22E91E63)
+                        )
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

@@ -39,6 +39,8 @@ class NyaAccessibilityService : AccessibilityService() {
     @Volatile private var appendContent = "喵"
     @Volatile private var isGlobalMode = true
     @Volatile private var appendMode = AppendMode.IDLE
+    @Volatile private var idleDelayMs = 1200
+    @Volatile private var punctuationDelayMs = 700
 
     @Volatile private var pendingAppendRunnable: Runnable? = null
     @Volatile private var lastAppendedText: String? = null
@@ -54,6 +56,8 @@ class NyaAccessibilityService : AccessibilityService() {
         appendContent = snap.appendContent.ifBlank { "喵" }
         isGlobalMode = snap.isGlobalMode
         appendMode = snap.appendMode
+        idleDelayMs = snap.idleDelayMs
+        punctuationDelayMs = snap.punctuationDelayMs
 
         scope.launch {
             (application as NyaApplication).prefs.masterEnabled.collectLatest {
@@ -73,6 +77,16 @@ class NyaAccessibilityService : AccessibilityService() {
         scope.launch {
             (application as NyaApplication).prefs.appendMode.collectLatest {
                 withContext(Dispatchers.Main) { appendMode = it }
+            }
+        }
+        scope.launch {
+            (application as NyaApplication).prefs.idleDelayMs.collectLatest {
+                withContext(Dispatchers.Main) { idleDelayMs = it }
+            }
+        }
+        scope.launch {
+            (application as NyaApplication).prefs.punctuationDelayMs.collectLatest {
+                withContext(Dispatchers.Main) { punctuationDelayMs = it }
             }
         }
     }
@@ -183,7 +197,7 @@ class NyaAccessibilityService : AccessibilityService() {
         if (currentText.endsWith(appendContent)) return
 
         val editor = node
-        Log.d(TAG, "检测到文本变化，1200ms 后追加「$appendContent」 → 当前: \"$currentText\"")
+        Log.d(TAG, "检测到文本变化，${idleDelayMs}ms 后追加「$appendContent」 → 当前: \"$currentText\"")
         val r = Runnable {
             appending = true
             try {
@@ -203,7 +217,7 @@ class NyaAccessibilityService : AccessibilityService() {
             }
         }
         pendingAppendRunnable = r
-        mainHandler.postDelayed(r, 1200)
+        mainHandler.postDelayed(r, idleDelayMs.toLong())
     }
 
     // ============================
@@ -232,7 +246,7 @@ class NyaAccessibilityService : AccessibilityService() {
 
         cancelPendingAppend()
         val editor = node
-        Log.d(TAG, "标点模式：700ms 后追加「$appendContent」 → 当前: \"$currentText\"")
+        Log.d(TAG, "标点模式：${punctuationDelayMs}ms 后追加「$appendContent」 → 当前: \"$currentText\"")
         val r = Runnable {
             appending = true
             try {
@@ -254,7 +268,7 @@ class NyaAccessibilityService : AccessibilityService() {
             }
         }
         pendingAppendRunnable = r
-        mainHandler.postDelayed(r, 700)
+        mainHandler.postDelayed(r, punctuationDelayMs.toLong())
     }
 
     private fun cancelPendingAppend() {

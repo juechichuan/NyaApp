@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -23,7 +24,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 /**
  * 自动追加模式
- * - IDLE：用户停顿 1.2s 后追加（实时模式）
+ * - IDLE：用户停顿指定时间后追加（实时模式）
  * - PUNCTUATION：仅在标点符号后追加
  */
 enum class AppendMode { IDLE, PUNCTUATION }
@@ -36,6 +37,8 @@ class NyaPrefs(private val context: Context) {
         val WHITELIST_PACKAGES = stringSetPreferencesKey("whitelist_packages")
         val IS_GLOBAL_MODE = booleanPreferencesKey("is_global_mode")
         val APPEND_MODE = stringPreferencesKey("append_mode")
+        val IDLE_DELAY_MS = intPreferencesKey("idle_delay_ms")
+        val PUNCTUATION_DELAY_MS = intPreferencesKey("punctuation_delay_ms")
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -52,7 +55,6 @@ class NyaPrefs(private val context: Context) {
         .map { p -> p[Keys.WHITELIST_PACKAGES] ?: emptySet() }
         .stateIn(scope, SharingStarted.Eagerly, emptySet())
 
-    // 全局模式：true=对所有App生效，false=仅白名单中的App生效
     val isGlobalMode: Flow<Boolean> = context.dataStore.data
         .map { p -> p[Keys.IS_GLOBAL_MODE] ?: true }
         .stateIn(scope, SharingStarted.Eagerly, true)
@@ -65,6 +67,16 @@ class NyaPrefs(private val context: Context) {
             }
         }
         .stateIn(scope, SharingStarted.Eagerly, AppendMode.IDLE)
+
+    /** 停顿追加模式延迟时间（毫秒），默认 1200ms，范围 300~3000 */
+    val idleDelayMs: Flow<Int> = context.dataStore.data
+        .map { p -> (p[Keys.IDLE_DELAY_MS] ?: 1200).coerceIn(300, 5000) }
+        .stateIn(scope, SharingStarted.Eagerly, 1200)
+
+    /** 标点追加模式延迟时间（毫秒），默认 700ms，范围 200~3000 */
+    val punctuationDelayMs: Flow<Int> = context.dataStore.data
+        .map { p -> (p[Keys.PUNCTUATION_DELAY_MS] ?: 700).coerceIn(200, 5000) }
+        .stateIn(scope, SharingStarted.Eagerly, 700)
 
     suspend fun setMasterEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.MASTER_ENABLED] = enabled }
@@ -86,8 +98,16 @@ class NyaPrefs(private val context: Context) {
         context.dataStore.edit { it[Keys.APPEND_MODE] = mode.name }
     }
 
+    suspend fun setIdleDelayMs(ms: Int) {
+        context.dataStore.edit { it[Keys.IDLE_DELAY_MS] = ms.coerceIn(300, 5000) }
+    }
+
+    suspend fun setPunctuationDelayMs(ms: Int) {
+        context.dataStore.edit { it[Keys.PUNCTUATION_DELAY_MS] = ms.coerceIn(200, 5000) }
+    }
+
     fun snapshotBlocking(): Snapshot {
-        val fallback = Snapshot(true, "喵", emptySet(), true, AppendMode.IDLE)
+        val fallback = Snapshot(true, "喵", emptySet(), true, AppendMode.IDLE, 1200, 700)
         val prefs: Preferences? = runCatching {
             runBlocking {
                 withTimeoutOrNull(800) {
@@ -104,7 +124,9 @@ class NyaPrefs(private val context: Context) {
             appendMode = when (prefs[Keys.APPEND_MODE]) {
                 "PUNCTUATION" -> AppendMode.PUNCTUATION
                 else -> AppendMode.IDLE
-            }
+            },
+            idleDelayMs = (prefs[Keys.IDLE_DELAY_MS] ?: 1200).coerceIn(300, 5000),
+            punctuationDelayMs = (prefs[Keys.PUNCTUATION_DELAY_MS] ?: 700).coerceIn(200, 5000)
         )
     }
 
@@ -113,6 +135,8 @@ class NyaPrefs(private val context: Context) {
         val appendContent: String,
         val whitelistPackages: Set<String>,
         val isGlobalMode: Boolean,
-        val appendMode: AppendMode
+        val appendMode: AppendMode,
+        val idleDelayMs: Int,
+        val punctuationDelayMs: Int
     )
 }
