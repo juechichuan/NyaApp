@@ -48,6 +48,10 @@ class NyaAccessibilityService : AccessibilityService() {
 
     @Volatile private var lastFocusedEditor: AccessibilityNodeInfo? = null
 
+    /** 每个节点的"上次已知文本长度"，用于识别用户是"增加字符"还是"删除字符"。
+     *  键 = node.hashCode()；切换窗口/焦点变化时清空。 */
+    private val textLengthByNode = hashMapOf<Int, Int>()
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -138,8 +142,12 @@ class NyaAccessibilityService : AccessibilityService() {
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> handleTextChanged(event)
-            AccessibilityEvent.TYPE_VIEW_FOCUSED -> maybeCacheFocusedEditor(event)
+            AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
+                textLengthByNode.clear()
+                maybeCacheFocusedEditor(event)
+            }
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                textLengthByNode.clear()
                 cancelPendingAppend()
                 lastFocusedEditor = null
                 lastAppendedText = null
@@ -154,6 +162,9 @@ class NyaAccessibilityService : AccessibilityService() {
         }
     }
 
+    // ============================
+    //  核心：文本变化入口（新增删除字符过滤 + 空文本兜底）
+    // ============================
     private fun handleTextChanged(event: AccessibilityEvent) {
         val source = event.source
         val node = source?.takeIf { isEditable(it) }
@@ -163,17 +174,47 @@ class NyaAccessibilityService : AccessibilityService() {
 
         if (isPasswordInput(node)) return
 
+        val currentText = node.text?.toString().orEmpty()
+        val currentLen = currentText.length
+        val nodeKey = node.hashCode()
+        val previousLen = textLengthByNode[nodeKey]
+
+        // ---- 1. 空文本：绝对不触发，清除所有状态
+        if (currentLen == 0) {
+            textLengthByNode[nodeKey] = 0
+            lastAppendedText = null
+            cancelPendingAppend()
+            return
+        }
+
+        // ---- 2. 删除字符（长度变短）：不触发；仅更新长度，取消任何已排队任务
+        if (previousLen != null && currentLen < previousLen) {
+            textLengthByNode[nodeKey] = currentLen
+            cancelPendingAppend()
+            // 用户在删除 → 我们之前追加的"喵"不再作为锚点，清空 lastAppendedText，
+            // 防止用户刚删完"喵"下一次 handle 因为 currentText==lastAppendedText 而误判
+            lastAppendedText = null
+            return
+        }
+
+        // ---- 3. 无变化（可能是重发事件）：长度一致且文本相等 → 不重复排程
+        if (previousLen != null && currentLen == previousLen && currentText == lastAppendedText) {
+            return
+        }
+
+        // ---- 4. 记录本次长度，交给两种追加模式
+        textLengthByNode[nodeKey] = currentLen
+
         when (appendMode) {
-            AppendMode.IDLE -> handleIdleAppend(node)
-            AppendMode.PUNCTUATION -> handlePunctuationAppend(node)
+            AppendMode.IDLE -> handleIdleAppend(node, currentText)
+            AppendMode.PUNCTUATION -> handlePunctuationAppend(node, currentText)
         }
     }
 
     // ============================
     //  模式 1：停顿追加
     // ============================
-    private fun handleIdleAppend(node: AccessibilityNodeInfo) {
-        val currentText = node.text?.toString().orEmpty()
+    private fun handleIdleAppend(node: AccessibilityNodeInfo, currentText: String) {
         if (currentText.isBlank()) {
             lastAppendedText = null
             cancelPendingAppend()
@@ -197,17 +238,25 @@ class NyaAccessibilityService : AccessibilityService() {
         if (currentText.endsWith(appendContent)) return
 
         val editor = node
+        // 快照：仅当用户在 idleDelayMs 内既没新增也没删除时才执行追加
+        val expectedSnapshot = currentText
         Log.d(TAG, "检测到文本变化，${idleDelayMs}ms 后追加「$appendContent」 → 当前: \"$currentText\"")
         val r = Runnable {
             appending = true
             try {
                 val latestText = editor.text?.toString().orEmpty()
+                // --- 空文本绝对不追加
                 if (latestText.isBlank()) return@Runnable
+                // --- 用户在停顿期间有新增/删除/替换 → 本次排程作废
+                if (latestText != expectedSnapshot) return@Runnable
+                // --- 末尾已经有追加内容 → 跳过（防止重复）
                 if (latestText.endsWith(appendContent)) return@Runnable
                 val newText = latestText + appendContent
                 val ok = appendTextToNode(editor, newText)
                 if (ok) {
                     lastAppendedText = newText
+                    // 更新长度记录，防止下一次 handle 误判为"新增字符"
+                    textLengthByNode[editor.hashCode()] = newText.length
                     Log.i(TAG, "✓ 已追加「$appendContent」→ \"$newText\"")
                 }
             } catch (t: Throwable) {
@@ -223,8 +272,7 @@ class NyaAccessibilityService : AccessibilityService() {
     // ============================
     //  模式 2：标点符号后追加
     // ============================
-    private fun handlePunctuationAppend(node: AccessibilityNodeInfo) {
-        val currentText = node.text?.toString().orEmpty()
+    private fun handlePunctuationAppend(node: AccessibilityNodeInfo, currentText: String) {
         if (currentText.isBlank()) {
             lastAppendedText = null
             cancelPendingAppend()
@@ -246,12 +294,16 @@ class NyaAccessibilityService : AccessibilityService() {
 
         cancelPendingAppend()
         val editor = node
+        val expectedSnapshot = currentText
         Log.d(TAG, "标点模式：${punctuationDelayMs}ms 后追加「$appendContent」 → 当前: \"$currentText\"")
         val r = Runnable {
             appending = true
             try {
                 val latestText = editor.text?.toString().orEmpty()
+                // --- 空文本绝对不追加
                 if (latestText.isBlank()) return@Runnable
+                // --- 停顿期间文本被改动（增/删/换） → 排程作废
+                if (latestText != expectedSnapshot) return@Runnable
                 if (latestText.endsWith(appendContent)) return@Runnable
                 val lastChar = latestText.lastOrNull()
                 if (lastChar != null && lastChar !in punctuations) return@Runnable
@@ -259,6 +311,7 @@ class NyaAccessibilityService : AccessibilityService() {
                 val ok = appendTextToNode(editor, newText)
                 if (ok) {
                     lastAppendedText = newText
+                    textLengthByNode[editor.hashCode()] = newText.length
                     Log.i(TAG, "✓ 标点后已追加「$appendContent」→ \"$newText\"")
                 }
             } catch (t: Throwable) {
