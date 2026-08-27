@@ -232,10 +232,9 @@ class NyaAccessibilityService : AccessibilityService() {
     /** 在 root 节点下查找当前处于焦点的可编辑 EditText */
     private fun findFocusedEditText(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         root ?: return null
-        // AccessibilityService.findFocus(int) 接受 FOCUS_INPUT / FOCUS_ACCESSIBILITY
-        val focused = runCatching {
-            this.findFocus(AccessibilityService.FOCUS_INPUT)
-        }.getOrNull()
+        // AccessibilityService.findFocus(int) 参数：1 = FOCUS_INPUT（输入焦点）, 2 = FOCUS_ACCESSIBILITY
+        // 用整数避免不同 SDK 版本常量引用差异
+        val focused = runCatching { this.findFocus(1) }.getOrNull()
         if (focused != null && isEditable(focused)) return focused
         // 退化：DFS 找第一个 isFocused 的 editable，再退到任意 editable
         val queue = ArrayDeque<AccessibilityNodeInfo>()
