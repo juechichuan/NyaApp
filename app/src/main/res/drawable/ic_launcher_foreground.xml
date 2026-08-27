@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 粉色圆形 -->
+    <path
+        android:fillColor="#FF8BB3"
+        android:pathData="M54,54 m-34,0 a34,34 0 1,0 68,0 a34,34 0 1,0 -68,0" />
+    <!-- 左耳 -->
+    <path
+        android:fillColor="#E25C8A"
+        android:pathData="M30,30 L22,12 L40,26 Z" />
+    <!-- 右耳 -->
+    <path
+        android:fillColor="#E25C8A"
+        android:pathData="M78,30 L86,12 L68,26 Z" />
+    <!-- 左耳内 -->
+    <path
+        android:fillColor="#FFD1E3"
+        android:pathData="M29,24 L27,17 L35,23 Z" />
+    <!-- 右耳内 -->
+    <path
+        android:fillColor="#FFD1E3"
+        android:pathData="M79,24 L81,17 L73,23 Z" />
+    <!-- 左眼 -->
+    <path
+        android:fillColor="#2D2D2D"
+        android:pathData="M42,48 m-3,0 a3,3.5 0 1,0 6,0 a3,3.5 0 1,0 -6,0" />
+    <!-- 右眼 -->
+    <path
+        android:fillColor="#2D2D2D"
+        android:pathData="M66,48 m-3,0 a3,3.5 0 1,0 6,0 a3,3.5 0 1,0 -6,0" />
+    <!-- 左眼高光 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M43,47 m-0.8,0 a0.8,0.9 0 1,0 1.6,0 a0.8,0.9 0 1,0 -1.6,0" />
+    <!-- 右眼高光 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M67,47 m-0.8,0 a0.8,0.9 0 1,0 1.6,0 a0.8,0.9 0 1,0 -1.6,0" />
+    <!-- 鼻子 -->
+    <path
+        android:fillColor="#2D2D2D"
+        android:pathData="M54,55 L51,58 L57,58 Z" />
+    <!-- 嘴 -->
+    <path
+        android:strokeColor="#2D2D2D"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000"
+        android:pathData="M54,58 C50,62 46,61 44,59 M54,58 C58,62 62,61 64,59" />
+    <!-- 腮红 -->
+    <path
+        android:fillColor="#FFD1E3"
+        android:pathData="M37,58 m-3.5,0 a3.5,2.5 0 1,0 7,0 a3.5,2.5 0 1,0 -7,0" />
+    <path
+        android:fillColor="#FFD1E3"
+        android:pathData="M71,58 m-3.5,0 a3.5,2.5 0 1,0 7,0 a3.5,2.5 0 1,0 -7,0" />
+</vector>
