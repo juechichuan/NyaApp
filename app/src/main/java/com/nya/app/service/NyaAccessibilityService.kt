@@ -36,18 +36,18 @@ class NyaAccessibilityService : AccessibilityService() {
     @Volatile private var masterEnabled = true
     @Volatile private var appendContent = "喵"
     @Volatile private var whitelistPackages: Set<String> = emptySet()
+    @Volatile private var isGlobalMode = true
 
-    // 防止重入：某次追加喵的操作正在进行时，忽略后续事件
     @Volatile private var appending = false
 
     override fun onCreate() {
         super.onCreate()
         instance = this
-        // 首次启动用 snapshotBlocking 加载默认值
         val snap = (application as NyaApplication).prefs.snapshotBlocking()
         masterEnabled = snap.masterEnabled
         appendContent = snap.appendContent
         whitelistPackages = snap.whitelistPackages
+        isGlobalMode = snap.isGlobalMode
 
         scope.launch {
             (application as NyaApplication).prefs.masterEnabled.collectLatest {
@@ -62,6 +62,11 @@ class NyaAccessibilityService : AccessibilityService() {
         scope.launch {
             (application as NyaApplication).prefs.whitelistPackages.collectLatest {
                 withContext(Dispatchers.Main) { whitelistPackages = it }
+            }
+        }
+        scope.launch {
+            (application as NyaApplication).prefs.isGlobalMode.collectLatest {
+                withContext(Dispatchers.Main) { isGlobalMode = it }
             }
         }
     }
@@ -83,9 +88,9 @@ class NyaAccessibilityService : AccessibilityService() {
         event ?: return
         if (!masterEnabled || appending) return
 
-        // 白名单过滤：只对白名单中的应用生效
+        // 全局模式：对所有App生效；非全局模式：仅白名单中的App生效
         val pkg = (event.packageName?.toString() ?: "").takeIf { it.isNotBlank() } ?: return
-        if (whitelistPackages.isNotEmpty() && !whitelistPackages.contains(pkg)) return
+        if (!isGlobalMode && whitelistPackages.isNotEmpty() && !whitelistPackages.contains(pkg)) return
 
         when (event.eventType) {
             // 方案：监听按钮点击事件（发送/确定/下一步）

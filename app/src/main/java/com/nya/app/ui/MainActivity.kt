@@ -1,7 +1,5 @@
 package com.nya.app.ui
 
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -9,33 +7,23 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import com.nya.app.NyaApplication
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
 import com.nya.app.shizuku.ShizukuManager
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -125,15 +113,13 @@ private fun NyaAppScreen(
     // 偏好设置（随用户修改实时更新）
     val masterEnabled by prefs.masterEnabled.collectAsStateWithLifecycle(initialValue = true)
     val appendContent by prefs.appendContent.collectAsStateWithLifecycle(initialValue = "喵")
-    val whitelist by prefs.whitelistPackages.collectAsStateWithLifecycle(initialValue = emptySet())
+    val isGlobalMode by prefs.isGlobalMode.collectAsStateWithLifecycle(initialValue = true)
 
     // 刷新状态（Shizuku / 无障碍）
     var shizukuReady by remember { mutableStateOf(shizuku.isShizukuReady()) }
     var a11yEnabled by remember { mutableStateOf(shizuku.isAccessibilityServiceEnabled()) }
     val serviceRunning = NyaAccessibilityService.isRunning()
 
-    // 选择 App Dialog
-    var showAppPicker by remember { mutableStateOf(false) }
     // 内容编辑 dialog
     var showContentDialog by remember { mutableStateOf(false) }
 
@@ -166,7 +152,7 @@ private fun NyaAppScreen(
                 a11yEnabled = a11yEnabled,
                 serviceRunning = serviceRunning,
                 masterEnabled = masterEnabled,
-                whitelistSize = whitelist.size
+                isGlobalMode = isGlobalMode
             )
 
             Spacer(Modifier.height(20.dp))
@@ -204,30 +190,14 @@ private fun NyaAppScreen(
             }
             HorizontalDivider(color = Color(0x22000000))
 
-            // 白名单选择
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 10.dp)
-                    .clickable { showAppPicker = true }
-                    .padding(horizontal = 4.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Apps, null, tint = Color(0xFFE25C8A))
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("生效应用（白名单）", fontWeight = FontWeight.Medium)
-                    CompositionLocalProvider(LocalTextStyle provides MaterialTheme.typography.bodySmall) {
-                        val n = whitelist.size
-                        Text(
-                            if (n == 0) "当前：未选择（全局不会生效）" else "已选择 $n 个应用",
-                            color = if (n == 0) Color(0xFFD93025) else Color.Gray
-                        )
-                    }
-                }
-                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray)
-            }
-            HorizontalDivider(color = Color(0x22000000))
+            // 全局模式开关（默认开启：对所有App生效，无需选择应用，彻底规避应用列表崩溃问题）
+            SwitchRow(
+                title = "全局模式（对所有App生效）",
+                desc = if (isGlobalMode) "已开启：所有应用输入完毕均自动追加"
+                       else "已关闭：仅对已记录的App生效",
+                checked = isGlobalMode,
+                onCheckedChange = { scope.launch { prefs.setGlobalMode(it) } }
+            )
 
             Spacer(Modifier.height(24.dp))
 
@@ -339,179 +309,6 @@ private fun NyaAppScreen(
             }
         )
     }
-
-    if (showAppPicker) {
-        // ⚠️ 查应用列表是 IO 操作，整个协程 try/catch 包死，防止后台异常杀进程 -> "强制返回桌面"
-        var errorText by remember(whitelist) { mutableStateOf<String?>(null) }
-        val installed by produceState<List<AppInfo>>(
-            initialValue = emptyList(),
-            key1 = whitelist
-        ) {
-            runCatching {
-                value = queryUserApps(ctx)
-                errorText = null
-            }.getOrElse { err ->
-                Log.e("AppPicker", "queryUserApps failed", err)
-                value = emptyList()
-                errorText = buildString {
-                    append("读取应用列表失败：\n")
-                    append(err.javaClass.simpleName).append(" : ").append(err.message ?: "无详细信息")
-                    append("\n\n请检查：")
-                    append("\n1) 是否授予本 App「查看所有应用」/ QUERY_ALL_PACKAGES 权限")
-                    append("\n2) 如果仍失败，请关闭手机「隐私保护空数据」类选项")
-                }
-            }
-        }
-        var selection by remember(whitelist) { mutableStateOf(whitelist.toMutableSet()) }
-        var keyword by remember { mutableStateOf("") }
-        val filtered = remember(installed, keyword) {
-            if (keyword.isBlank()) installed else installed.filter {
-                it.label.contains(keyword, ignoreCase = true) ||
-                    it.pkg.contains(keyword, ignoreCase = true)
-            }
-        }
-
-        // ⚠️ 不用 AlertDialog 的 text 槽位（放 LazyColumn / 高度内容时在定制ROM上触发高度测量死循环崩溃）
-        //    改成分层的 Card + 自定义滚动 Column，保证布局约束确定（这是修复 1-2 秒后强制返回桌面的关键）
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showAppPicker = false }
-        ) {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                modifier = Modifier.fillMaxWidth().wrapContentHeight()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Text(
-                        "选择生效应用（白名单）",
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 18.sp
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = keyword,
-                        onValueChange = { keyword = it },
-                        label = { Text("🔍 搜索应用名 / 包名") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    // 固定最大高度，让 Compose 的约束确定，不会触发 infinite maxHeight 死循环
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 120.dp, max = 360.dp)
-                    ) {
-                        when {
-                            errorText != null -> {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .verticalScroll(rememberScrollState())
-                                        .padding(4.dp)
-                                ) {
-                                    Text(
-                                        errorText!!,
-                                        color = Color(0xFFD93025),
-                                        fontSize = 12.sp,
-                                        lineHeight = 16.sp
-                                    )
-                                    Spacer(Modifier.height(10.dp))
-                                    OutlinedButton(
-                                        onClick = {
-                                            // 尝试打开应用详情页，让用户手动开 QUERY_ALL_PACKAGES
-                                            val intent = Intent(
-                                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                Uri.parse("package:" + ctx.packageName)
-                                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            runCatching { ctx.startActivity(intent) }
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) { Text("打开权限设置页") }
-                                }
-                            }
-                            installed.isEmpty() -> {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) { Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    CircularProgressIndicator(color = Color(0xFFE25C8A))
-                                    Spacer(Modifier.height(10.dp))
-                                    Text("正在读取应用列表...", color = Color.Gray, fontSize = 12.sp)
-                                }}
-                            }
-                            filtered.isEmpty() -> {
-                                Box(
-                                    modifier = Modifier.fillMaxSize().padding(20.dp),
-                                    contentAlignment = Alignment.Center
-                                ) { Text("没有匹配的应用", color = Color.Gray) }
-                            }
-                            else -> {
-                                // ⚠️ 用 LazyColumn 但放在有确定 maxHeight 的 Box 里，这是根本修复
-                                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                    items(filtered, key = { it.pkg }) { app ->
-                                        val checked = selection.contains(app.pkg)
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    if (checked) selection.remove(app.pkg)
-                                                    else selection.add(app.pkg)
-                                                }
-                                                .padding(vertical = 10.dp, horizontal = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Checkbox(checked = checked, onCheckedChange = {
-                                                if (it) selection.add(app.pkg)
-                                                else selection.remove(app.pkg)
-                                            })
-                                            Spacer(Modifier.width(8.dp))
-                                            androidx.compose.foundation.Image(
-                                                painter = androidx.compose.ui.res.painterResource(
-                                                    android.R.drawable.sym_def_app_icon
-                                                ),
-                                                contentDescription = null,
-                                                modifier = Modifier.size(30.dp)
-                                            )
-                                            Spacer(Modifier.width(10.dp))
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(app.label, fontWeight = FontWeight.Medium)
-                                                Text(
-                                                    app.pkg,
-                                                    fontSize = 11.sp,
-                                                    color = Color.Gray
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        TextButton(onClick = { showAppPicker = false }) { Text("取消") }
-                        Spacer(Modifier.weight(1f))
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    prefs.setWhitelistPackages(selection)
-                                    showAppPicker = false
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFFE25C8A),
-                                contentColor = Color.White
-                            )
-                        ) { Text("保存（${selection.size}）") }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // ========================
@@ -534,7 +331,7 @@ private fun StatusGrid(
     a11yEnabled: Boolean,
     serviceRunning: Boolean,
     masterEnabled: Boolean,
-    whitelistSize: Int
+    isGlobalMode: Boolean
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -554,8 +351,12 @@ private fun StatusGrid(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("白名单已选应用数", color = Color.Gray)
-                Text("${whitelistSize} 个", fontWeight = FontWeight.Medium)
+                Text("生效模式", color = Color.Gray)
+                Text(
+                    if (isGlobalMode) "全局（所有App）" else "白名单模式",
+                    fontWeight = FontWeight.Medium,
+                    color = if (isGlobalMode) Color(0xFF188038) else Color(0xFFE25C8A)
+                )
             }
         }
     }
@@ -663,70 +464,3 @@ private fun ActionButton(
         }
     }
 }
-
-// ========================
-//  查询用户已安装应用
-// ========================
-private data class AppInfo(val label: String, val pkg: String)
-
-private suspend fun queryUserApps(ctx: android.content.Context): List<AppInfo> =
-    withContext(Dispatchers.IO) {
-        val pm = ctx.packageManager
-        // 用已安装应用列表 -> 找能启动的 launcher intent（比 queryIntentActivities(ACTION_MAIN) 更稳，
-        // 不会被"同包多入口 / 别名 activity"导致重复，也不会因为 MATCH_ALL 触发某些 ROM 的安全拦截）
-        val installedPkgs: List<android.content.pm.ApplicationInfo> =
-            runCatching {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                    pm.getInstalledApplications(
-                        android.content.pm.PackageManager.ApplicationInfoFlags.of(0L)
-                    )
-                } else {
-                    @Suppress("DEPRECATION")
-                    pm.getInstalledApplications(0)
-                }
-            }.getOrDefault(emptyList())
-
-        val results = mutableListOf<AppInfo>()
-        val seenPkgs = HashSet<String>()
-
-        for (appInfo in installedPkgs) {
-            val pkg = appInfo.packageName ?: continue
-            if (pkg == ctx.packageName) continue
-            if (seenPkgs.contains(pkg)) continue
-
-            // 必须要有桌面启动入口，否则对用户而言不是"可以打开发消息"的 App
-            runCatching { pm.getLaunchIntentForPackage(pkg) }.getOrNull()
-                ?: continue
-
-            val isSystem =
-                (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-            val isUpdatedSystem =
-                (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-
-            val label = runCatching {
-                appInfo.loadLabel(pm)?.toString()?.trim()?.ifBlank { null }
-            }.getOrNull() ?: pkg
-
-            // 纯系统 App（没被用户升级过）：名字不规范 / 包名以 com.android.xxx 开头 → 过滤掉
-            // （比如 com.android.settings 虽然有入口，但用户一般不会在里面发消息）
-            if (isSystem && !isUpdatedSystem) {
-                // 但保留主流常用系统 App：比如信息、拨号、日历、相机、便签等
-                val whitelistedSystem = listOf(
-                    "com.android.mms",
-                    "com.google.android.apps.messaging",
-                    "com.android.calendar",
-                    "com.google.android.calendar"
-                )
-                if (pkg !in whitelistedSystem &&
-                    (pkg.startsWith("com.android.") ||
-                            pkg.startsWith("com.google.android.gms") ||
-                            pkg.startsWith("android."))
-                ) continue
-            }
-            if (label.isEmpty()) continue
-            seenPkgs.add(pkg)
-            results.add(AppInfo(label, pkg))
-        }
-        results.sortBy { it.label.lowercase() }
-        results
-    }
