@@ -10,6 +10,15 @@
     <queries>
         <!-- 与 Shizuku App / Sui 交互需要 -->
         <package android:name="moe.shizuku.privileged.api" />
+        <!--
+          Android 11+ 包可见性：声明可见所有带启动入口的应用，
+          这样 AppPickerActivity 才能列出全部用户安装的应用，
+          不需要 QUERY_ALL_PACKAGES 权限（规避 Play Store 限制 + ColorOS 隐私拦截）。
+        -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application

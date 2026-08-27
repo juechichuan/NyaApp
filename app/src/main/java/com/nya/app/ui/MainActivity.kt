@@ -27,7 +27,9 @@ import com.nya.app.NyaApplication
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
 import com.nya.app.shizuku.ShizukuManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -129,6 +131,31 @@ private fun NyaAppScreen(
     // 关于抽屉
     var showAbout by remember { mutableStateOf(false) }
 
+    // 应用列表可见性检测：启动时异步查询应用列表数量
+    // Android 11+ 包可见性：若 manifest 未正确声明 <queries>，应用列表会严重不全
+    var appVisibility by remember { mutableStateOf(-1) }  // -1=未检测, 0=列表为空, >0=应用数
+    LaunchedEffect(Unit) {
+        val count = withContext(Dispatchers.IO) {
+            runCatching {
+                val launcherIntent = android.content.Intent(android.content.Intent.ACTION_MAIN, null).apply {
+                    addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                }
+                val pm = ctx.packageManager
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    pm.queryIntentActivities(
+                        launcherIntent,
+                        android.content.pm.PackageManager.ResolveInfoFlags.of(android.content.pm.PackageManager.MATCH_ALL.toLong())
+                    ).size
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.queryIntentActivities(launcherIntent, android.content.pm.PackageManager.MATCH_ALL).size
+                }
+            }.getOrDefault(0)
+        }
+        appVisibility = count
+        Log.i("MainActivity", "应用列表可见性检测：共 $count 个启动器应用")
+    }
+
     val scrollState = rememberScrollState()
 
     Scaffold(
@@ -158,6 +185,29 @@ private fun NyaAppScreen(
                 .verticalScroll(scrollState)
                 .padding(16.dp)
         ) {
+            // ===== 应用列表可见性警告 =====
+            if (appVisibility in 0..4) {
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("⚠️ 应用列表读取不全", fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
+                        Text(
+                            "检测到仅 $appVisibility 个应用可见。" +
+                            "这会导致「部分应用生效」模式无法正确选择目标 App。\n" +
+                            "若已重装最新版仍有此提示，说明系统（ColorOS）做了隐私拦截，" +
+                            "请尝试通过 Shizuku 授权后再使用应用选择。",
+                            fontSize = 12.sp,
+                            color = Color(0xFF5D4037),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
             // ===== 状态卡片 =====
             SectionTitle(text = "当前状态")
             Spacer(Modifier.height(8.dp))

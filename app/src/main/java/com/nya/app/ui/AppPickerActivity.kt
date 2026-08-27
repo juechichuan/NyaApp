@@ -89,30 +89,71 @@ class AppPickerActivity : ComponentActivity() {
     }
 
     /**
-     * 查询已安装的第三方应用（排除系统应用和本应用）。
-     * 只取有启动 Intent 的应用，避免列表过长。
+     * 查询已安装的第三方应用。
+     *
+     * 实现策略（适配 Android 11+ 包可见性）：
+     * 1. 优先使用 queryIntentActivities(MAIN+LAUNCHER)，配合 manifest 的 <queries> 声明
+     *    可拿到所有带启动入口的应用（最稳）
+     * 2. 退化方案：getInstalledApplications（受 queries 限制）
+     * 3. 标记系统应用：FLAG_SYSTEM 或 FLAG_UPDATED_SYSTEM_APP
      */
     private fun queryUserApps(): List<AppInfo> {
         val pm = packageManager
-        val all = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-        return all
-            .filter { info ->
-                // 排除本应用自身
-                info.packageName != packageName &&
-                // 必须有可启动 Intent（排除库 / 服务类应用）
-                pm.getLaunchIntentForPackage(info.packageName) != null
+
+        // 主路径：通过 MAIN+LAUNCHER Intent 查询所有启动器应用
+        val launcherIntent = Intent(Intent.ACTION_MAIN, null).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val resolveInfos = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                pm.queryIntentActivities(
+                    launcherIntent,
+                    PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong())
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                pm.queryIntentActivities(launcherIntent, PackageManager.MATCH_ALL)
             }
-            .map { info ->
+        }.getOrDefault(emptyList())
+
+        Log.i(TAG, "queryIntentActivities 返回 ${resolveInfos.size} 个启动器应用")
+
+        // 退化路径：如果 queryIntent 结果为空（极少见，可能是 ROM 隔离），
+        // 退化到 getInstalledApplications
+        val apps = if (resolveInfos.isNotEmpty()) {
+            resolveInfos.mapNotNull { ri ->
+                val info = ri.activityInfo ?: return@mapNotNull null
+                val pkg = info.packageName
+                if (pkg == packageName) return@mapNotNull null  // 排除自身
+                val appInfo = runCatching { pm.getApplicationInfo(pkg, 0) }.getOrNull()
+                    ?: return@mapNotNull null
                 AppInfo(
-                    packageName = info.packageName,
-                    label = pm.getApplicationLabel(info).toString(),
-                    isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    packageName = pkg,
+                    label = ri.loadLabel(pm).toString(),
+                    isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 )
             }
-            .sortedWith(
-                compareBy<AppInfo> { it.isSystem }  // 第三方应用在前
-                    .thenBy { it.label }              // 按名称排序
-            )
+        } else {
+            Log.w(TAG, "queryIntentActivities 为空，退化到 getInstalledApplications")
+            pm.getInstalledApplications(0)
+                .filter { it.packageName != packageName }
+                .filter { pm.getLaunchIntentForPackage(it.packageName) != null }
+                .map {
+                    AppInfo(
+                        packageName = it.packageName,
+                        label = pm.getApplicationLabel(it).toString(),
+                        isSystem = (it.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    )
+                }
+        }
+
+        // 去重（同一个包名可能有多个 Activity 入口）
+        val deduped = apps.distinctBy { it.packageName }
+
+        return deduped.sortedWith(
+            compareBy<AppInfo> { it.isSystem }  // 第三方应用在前
+                .thenBy { it.label }              // 按名称排序
+        )
     }
 }
 
@@ -208,6 +249,30 @@ private fun AppPickerScreen(
                     }
                 }
                 return@Scaffold
+            }
+
+            // 检测：应用列表过少 → 提示包可见性问题
+            if (apps.isNotEmpty() && apps.size < 5) {
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("⚠️ 应用列表读取不全", fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
+                        Text(
+                            "检测到仅 ${apps.size} 个应用。可能原因：\n" +
+                            "1. Android 11+ 包可见性限制\n" +
+                            "2. 系统对应用读取做了隐私拦截\n\n" +
+                            "建议：通过 Shizuku 授权后，可获取完整应用列表。",
+                            fontSize = 12.sp,
+                            color = Color(0xFF5D4037),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
             }
 
             if (filtered.isEmpty()) {
