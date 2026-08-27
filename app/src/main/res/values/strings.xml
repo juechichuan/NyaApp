@@ -1,23 +1,13 @@
 <resources>
     <string name="app_name">喵输入法助手</string>
     <string name="service_name">喵输入法助手服务</string>
-    <string name="service_description">在您点击「发送」或按下「回车」时，自动在文本末尾追加自定义内容（默认：喵），支持按应用白名单生效，自动跳过密码输入框。</string>
+    <string name="service_description">在用户输入文本后自动在末尾追加自定义内容（默认：喵），支持按应用白名单生效，自动跳过密码输入框。</string>
 
     <!-- 运行时文案 -->
-    <string name="permission_denied">未获得 Shizuku 授权</string>
-    <string name="permission_granted">Shizuku 授权正常</string>
     <string name="accessibility_disabled">无障碍服务未开启</string>
     <string name="accessibility_enabled">无障碍服务已启用</string>
     <string name="master_switch">启用自动追加功能</string>
     <string name="append_content">追加文本内容</string>
     <string name="append_content_hint">默认为「喵」，可自定义</string>
-    <string name="app_whitelist">生效应用（白名单）</string>
-    <string name="select_apps">选择需要生效的应用</string>
-    <string name="authorize_shizuku">授权 Shizuku</string>
-    <string name="enable_accessibility">一键开启无障碍服务（需 Shizuku）</string>
-    <string name="open_accessibility_settings">手动打开无障碍设置</string>
-    <string name="status">当前状态</string>
-    <string name="settings">功能设置</string>
-    <string name="advanced">高级操作</string>
     <string name="about">关于</string>
 </resources>

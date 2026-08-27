@@ -3,6 +3,7 @@ package com.nya.app.ui
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,95 +15,43 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nya.app.NyaApplication
 import com.nya.app.R
+import com.nya.app.data.AppendMode
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
-import com.nya.app.shizuku.ShizukuManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var shizuku: ShizukuManager
     private lateinit var prefs: NyaPrefs
 
-    /** 当前启动生命周期内是否已经自动请求过一次（避免 onResume 反复弹） */
-    private var autoRequestedThisLaunch = false
-
-    /** Shizuku 授权结果回调（只注册一次，在 onDestroy 移除） */
-    private val permissionResultListener = rikka.shizuku.Shizuku.OnRequestPermissionResultListener { _, _ ->
-        // 结果到达时刷新界面
-        invalidateUi()
-    }
-
-    private fun invalidateUi() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        prefs = (application as NyaApplication).prefs
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Color(0xFFE91E63),
                 secondary = Color(0xFFF48FB1),
                 tertiary = Color(0xFF7C4DFF)
             )) {
-                NyaAppScreen(shizuku = shizuku, prefs = prefs, activity = this@MainActivity)
+                NyaAppScreen(prefs = prefs, activity = this@MainActivity)
             }
-        }
-    }
-
-    private fun autoRequestShizukuPermissionIfNeeded() {
-        // 1) 已授权 -> 不用请求
-        if (shizuku.isShizukuReady()) return
-        // 2) Shizuku / Sui 服务本身没起来 (pingBinder 失败) -> 不用请求，提示留给 UI
-        if (!kotlin.runCatching { rikka.shizuku.Shizuku.pingBinder() }.getOrDefault(false)) return
-        // 3) 避免 onResume 反复请求 -> 每个前台生命周期最多一次
-        if (autoRequestedThisLaunch) return
-        autoRequestedThisLaunch = true
-        // 4) 静默请求，不弹 Toast；失败后用户仍可通过 UI 按钮手动操作
-        Log.d("MainActivity", "autoRequestShizukuPermissionIfNeeded: requesting permission...")
-        shizuku.requestPermission(this) { granted ->
-            Log.d("MainActivity", "autoRequestShizukuPermissionIfNeeded: granted=$granted")
-            invalidateUi()
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        shizuku = (application as NyaApplication).shizuku
-        prefs = (application as NyaApplication).prefs
-        // 注册 Shizuku 授权结果监听（官方推荐：监听覆盖授权后外部弹窗关闭的情况）
-        kotlin.runCatching {
-            rikka.shizuku.Shizuku.addRequestPermissionResultListener(permissionResultListener)
-        }
-        invalidateUi()
-        autoRequestShizukuPermissionIfNeeded()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // 状态可能变化（用户中途在 Shizuku 授予 / 切回），刷新 UI
-        invalidateUi()
-        // 尝试自动请求（若 onCreate 时服务还没起来，现在可能好了）
-        autoRequestShizukuPermissionIfNeeded()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        kotlin.runCatching {
-            rikka.shizuku.Shizuku.removeRequestPermissionResultListener(permissionResultListener)
         }
     }
 }
@@ -114,53 +63,22 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NyaAppScreen(
-    shizuku: ShizukuManager,
     prefs: NyaPrefs,
     activity: MainActivity
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // 偏好设置（随用户修改实时更新）
     val masterEnabled by prefs.masterEnabled.collectAsStateWithLifecycle(initialValue = true)
     val appendContent by prefs.appendContent.collectAsStateWithLifecycle(initialValue = "喵")
     val isGlobalMode by prefs.isGlobalMode.collectAsStateWithLifecycle(initialValue = true)
-    val appendMode by prefs.appendMode.collectAsStateWithLifecycle(initialValue = com.nya.app.data.AppendMode.IDLE)
+    val appendMode by prefs.appendMode.collectAsStateWithLifecycle(initialValue = AppendMode.IDLE)
 
-    // 刷新状态（Shizuku / 无障碍）
-    var shizukuReady by remember { mutableStateOf(shizuku.isShizukuReady()) }
-    var a11yEnabled by remember { mutableStateOf(shizuku.isAccessibilityServiceEnabled()) }
+    var a11yEnabled by remember { mutableStateOf(isAccessibilityServiceEnabled(ctx)) }
     val serviceRunning = NyaAccessibilityService.isRunning()
 
-    // 内容编辑 dialog
     var showContentDialog by remember { mutableStateOf(false) }
-    // 关于抽屉
     var showAbout by remember { mutableStateOf(false) }
-
-    // 应用列表可见性检测：启动时异步查询应用列表数量
-    // Android 11+ 包可见性：若 manifest 未正确声明 <queries>，应用列表会严重不全
-    var appVisibility by remember { mutableStateOf(-1) }  // -1=未检测, 0=列表为空, >0=应用数
-    LaunchedEffect(Unit) {
-        val count = withContext(Dispatchers.IO) {
-            runCatching {
-                val launcherIntent = android.content.Intent(android.content.Intent.ACTION_MAIN, null).apply {
-                    addCategory(android.content.Intent.CATEGORY_LAUNCHER)
-                }
-                val pm = ctx.packageManager
-                if (android.os.Build.VERSION.SDK_INT >= 33) {
-                    pm.queryIntentActivities(
-                        launcherIntent,
-                        android.content.pm.PackageManager.ResolveInfoFlags.of(android.content.pm.PackageManager.MATCH_ALL.toLong())
-                    ).size
-                } else {
-                    @Suppress("DEPRECATION")
-                    pm.queryIntentActivities(launcherIntent, android.content.pm.PackageManager.MATCH_ALL).size
-                }
-            }.getOrDefault(0)
-        }
-        appVisibility = count
-        Log.i("MainActivity", "应用列表可见性检测：共 $count 个启动器应用")
-    }
 
     val scrollState = rememberScrollState()
 
@@ -168,13 +86,11 @@ private fun NyaAppScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🐱 喵输入法助手", fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
-                    }
+                    Text("🐱 喵输入法助手", fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
                 },
                 actions = {
-                    IconButton(onClick = { showAbout = true }) {
-                        Icon(Icons.Default.Info, contentDescription = "关于")
+                    TextButton(onClick = { showAbout = true }) {
+                        Text("关于", color = Color(0xFFE91E63), fontWeight = FontWeight.Medium)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -191,34 +107,10 @@ private fun NyaAppScreen(
                 .verticalScroll(scrollState)
                 .padding(16.dp)
         ) {
-            // ===== 应用列表可见性警告 =====
-            if (appVisibility in 0..4) {
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("⚠️ 应用列表读取不全", fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
-                        Text(
-                            "检测到仅 $appVisibility 个应用可见。" +
-                            "这会导致「部分应用生效」模式无法正确选择目标 App。\n" +
-                            "若已重装最新版仍有此提示，说明系统（ColorOS）做了隐私拦截，" +
-                            "请尝试通过 Shizuku 授权后再使用应用选择。",
-                            fontSize = 12.sp,
-                            color = Color(0xFF5D4037),
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-
             // ===== 状态卡片 =====
-            SectionTitle(text = "当前状态")
+            SectionTitle("当前状态")
             Spacer(Modifier.height(8.dp))
             StatusGrid(
-                shizukuReady = shizukuReady,
                 a11yEnabled = a11yEnabled,
                 serviceRunning = serviceRunning,
                 masterEnabled = masterEnabled,
@@ -229,10 +121,9 @@ private fun NyaAppScreen(
             Spacer(Modifier.height(20.dp))
 
             // ===== 功能设置 =====
-            SectionTitle(text = "功能设置")
+            SectionTitle("功能设置")
             Spacer(Modifier.height(8.dp))
 
-            // 总开关
             SwitchRow(
                 title = "启用自动追加功能",
                 desc = "关闭后所有应用都不会追加文本",
@@ -249,38 +140,36 @@ private fun NyaAppScreen(
                     .padding(horizontal = 4.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Edit, null, tint = Color(0xFFE25C8A))
+                Text("✏️", fontSize = 20.sp)
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text("追加文本内容", fontWeight = FontWeight.Medium)
-                    CompositionLocalProvider(LocalTextStyle provides MaterialTheme.typography.bodySmall) {
-                        Text("当前：「 $appendContent 」，点击可自定义", color = Color.Gray)
-                    }
+                    Text("当前：「 $appendContent 」，点击可自定义", color = Color.Gray, fontSize = 12.sp)
                 }
-                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray)
+                Text("›", color = Color.Gray, fontSize = 20.sp)
             }
             HorizontalDivider(color = Color(0x22000000))
 
-            // 追加模式（单选）
+            // 追加模式
             SectionLabel("自动追加模式")
             Spacer(Modifier.height(4.dp))
             RadioRow(
                 title = "实时停顿追加",
                 desc = "用户停顿 1.2 秒后自动追加；继续输入时撤回并重新计时",
-                selected = appendMode == com.nya.app.data.AppendMode.IDLE,
-                onClick = { scope.launch { prefs.setAppendMode(com.nya.app.data.AppendMode.IDLE) } }
+                selected = appendMode == AppendMode.IDLE,
+                onClick = { scope.launch { prefs.setAppendMode(AppendMode.IDLE) } }
             )
             RadioRow(
                 title = "标点符号后追加",
-                desc = "仅当输入末尾是标点（。，！？等）时立即追加",
-                selected = appendMode == com.nya.app.data.AppendMode.PUNCTUATION,
-                onClick = { scope.launch { prefs.setAppendMode(com.nya.app.data.AppendMode.PUNCTUATION) } }
+                desc = "仅当输入末尾是标点（。，！？等）时 0.7 秒后追加",
+                selected = appendMode == AppendMode.PUNCTUATION,
+                onClick = { scope.launch { prefs.setAppendMode(AppendMode.PUNCTUATION) } }
             )
 
             Spacer(Modifier.height(20.dp))
 
             // ===== 生效范围 =====
-            SectionTitle(text = "生效范围")
+            SectionTitle("生效范围")
             Spacer(Modifier.height(8.dp))
             RadioRow(
                 title = "全局生效",
@@ -295,7 +184,6 @@ private fun NyaAppScreen(
                 onClick = {
                     scope.launch {
                         prefs.setGlobalMode(false)
-                        // 跳转到独立应用选择 Activity（规避 Dialog 崩溃）
                         val i = Intent(ctx, AppPickerActivity::class.java)
                         i.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                         ctx.startActivity(i)
@@ -305,83 +193,57 @@ private fun NyaAppScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            // ===== 高级操作 =====
-            SectionTitle(text = "高级操作")
+            // ===== 无障碍服务 =====
+            SectionTitle("无障碍服务")
             Spacer(Modifier.height(8.dp))
 
-            // 授权 Shizuku
-            ActionButton(
-                title = if (shizukuReady) "✓ Shizuku 授权正常（点击重新检测）" else "① 授权 Shizuku",
-                subtitle = "需要先安装 Shizuku App 或 Sui，并通过 adb 启动服务",
-                primary = !shizukuReady,
-                icon = Icons.Default.Security
-            ) {
-                shizuku.requestPermission(activity) {
-                    shizukuReady = shizuku.isShizukuReady()
-                    a11yEnabled = shizuku.isAccessibilityServiceEnabled()
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            // 一键开启无障碍（依赖 Shizuku）
-            ActionButton(
-                title = if (a11yEnabled) "✓ 无障碍服务已启用（点击重新检测）" else "② 一键开启无障碍服务",
-                subtitle = if (a11yEnabled) "已在系统设置中启用"
-                            else if (shizukuReady) "将通过 Shizuku 自动写入系统设置，无需手动翻找"
-                            else "请先完成 Shizuku 授权",
-                primary = !a11yEnabled && shizukuReady,
-                enabled = !a11yEnabled,
-                icon = Icons.Default.TouchApp
-            ) {
-                if (!shizukuReady) {
-                    android.widget.Toast.makeText(ctx, "请先授权 Shizuku", android.widget.Toast.LENGTH_SHORT).show()
-                    return@ActionButton
-                }
-                val ok = shizuku.enableAccessibilityServiceByShizuku()
-                android.widget.Toast.makeText(
-                    ctx,
-                    if (ok) "已开启，若未立即生效请重启无障碍" else "开启失败，请手动打开下方无障碍设置",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-                // 300ms 后刷新状态
-                androidx.core.os.HandlerCompat.postDelayed(
-                    android.os.Handler(ctx.mainLooper),
-                    {
-                        shizukuReady = shizuku.isShizukuReady()
-                        a11yEnabled = shizuku.isAccessibilityServiceEnabled()
+            if (!a11yEnabled) {
+                Button(
+                    onClick = {
+                        ctx.startActivity(
+                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
                     },
-                    null, 350
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFE25C8A),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("开启无障碍服务", fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "点击上方按钮 → 在系统设置中找到「喵输入法助手」并开启",
+                    fontSize = 12.sp,
+                    color = Color.Gray
                 )
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        ctx.startActivity(
+                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("已开启（点击重新进入无障碍设置）")
+                }
             }
 
             Spacer(Modifier.height(8.dp))
-
-            // 手动兜底
-            OutlinedButton(
-                onClick = { shizuku.openAccessibilitySettings(ctx) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Settings, null)
-                Spacer(Modifier.width(8.dp))
-                Text("手动打开系统无障碍设置（兜底方案）")
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            OutlinedButton(
-                onClick = { shizuku.openShizukuAppOrInstall(activity) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.OpenInNew, null)
-                Spacer(Modifier.width(8.dp))
-                Text("打开/下载 Shizuku App")
-            }
+            Text(
+                "提示：返回 App 后会自动刷新状态",
+                fontSize = 11.sp,
+                color = Color.Gray
+            )
         }
     }
 
-    // ---------- Dialogs ----------
-
+    // ---------- 自定义内容 Dialog ----------
     if (showContentDialog) {
         var draft by remember { mutableStateOf(appendContent) }
         AlertDialog(
@@ -414,10 +276,103 @@ private fun NyaAppScreen(
         )
     }
 
-    // ---------- 关于抽屉 ----------
+    // ---------- 关于 Dialog（用 AlertDialog 替代 ModalBottomSheet，规避 ColorOS 崩溃）----------
     if (showAbout) {
-        AboutSheet(onDismiss = { showAbout = false })
+        AboutDialog(onDismiss = { showAbout = false })
     }
+}
+
+// ========================
+//  关于对话框
+// ========================
+
+@Composable
+private fun AboutDialog(onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val versionName = remember {
+        runCatching {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+        }.getOrDefault("1.0.0")
+    }
+    val githubUrl = "https://github.com/juechichuan/NyaApp"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🐱", fontSize = 24.sp)
+                Spacer(Modifier.width(8.dp))
+                Text("喵输入法助手", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text("v$versionName", fontSize = 13.sp, color = Color.Gray)
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = Color(0x22000000))
+                Spacer(Modifier.height(12.dp))
+
+                Text("通过无障碍服务自动在用户输入末尾追加文本（默认「喵」），适配 Android 16 / ColorOS 15", fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                Text("开源协议：MIT License", fontSize = 12.sp, color = Color.Gray)
+                Spacer(Modifier.height(12.dp))
+
+                // 源代码
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val i = Intent(Intent.ACTION_VIEW, Uri.parse(githubUrl))
+                            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            ctx.startActivity(i)
+                        }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🔗", fontSize = 16.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("源代码开放", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        Text(githubUrl, fontSize = 11.sp, color = Color.Gray)
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(color = Color(0x22000000))
+                Spacer(Modifier.height(12.dp))
+
+                // 赞助
+                Text("赞助作者", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFFE25C8A))
+                Spacer(Modifier.height(4.dp))
+                Text("开发者邮箱：3627714945@qq.com", fontSize = 12.sp, color = Color.Gray)
+                Spacer(Modifier.height(8.dp))
+
+                // 赞赏码图片
+                val sponsorBitmap = remember(ctx) {
+                    runCatching {
+                        android.graphics.BitmapFactory.decodeResource(ctx.resources, R.drawable.ic_sponsor_code)
+                    }.getOrNull()
+                }
+                if (sponsorBitmap != null) {
+                    Image(
+                        bitmap = sponsorBitmap.asImageBitmap(),
+                        contentDescription = "赞赏码",
+                        modifier = Modifier
+                            .size(180.dp)
+                            .background(Color.White, RoundedCornerShape(8.dp))
+                            .padding(4.dp)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text("感谢你的支持 ❤️", fontSize = 12.sp, color = Color(0xFFE25C8A))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
 }
 
 // ========================
@@ -436,12 +391,11 @@ private fun SectionTitle(text: String) {
 
 @Composable
 private fun StatusGrid(
-    shizukuReady: Boolean,
     a11yEnabled: Boolean,
     serviceRunning: Boolean,
     masterEnabled: Boolean,
     isGlobalMode: Boolean,
-    appendMode: com.nya.app.data.AppendMode
+    appendMode: AppendMode
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -449,8 +403,6 @@ private fun StatusGrid(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
-            StatusRow("Shizuku 授权", shizukuReady)
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
             StatusRow("无障碍服务（系统层）", a11yEnabled)
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
             StatusRow("无障碍服务（运行中）", serviceRunning)
@@ -475,7 +427,7 @@ private fun StatusGrid(
             ) {
                 Text("追加模式", color = Color.Gray)
                 Text(
-                    if (appendMode == com.nya.app.data.AppendMode.IDLE) "停顿追加" else "标点追加",
+                    if (appendMode == AppendMode.IDLE) "停顿追加" else "标点追加",
                     fontWeight = FontWeight.Medium,
                     color = Color(0xFFE25C8A)
                 )
@@ -524,7 +476,7 @@ private fun SwitchRow(
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.AutoAwesome, null, tint = Color(0xFFE25C8A))
+        Text("✨", fontSize = 20.sp)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.Medium)
@@ -564,7 +516,7 @@ private fun RadioRow(
         RadioButton(
             selected = selected,
             onClick = onClick,
-            colors = androidx.compose.material3.RadioButtonDefaults.colors(
+            colors = RadioButtonDefaults.colors(
                 selectedColor = Color(0xFFE25C8A)
             )
         )
@@ -577,199 +529,18 @@ private fun RadioRow(
     HorizontalDivider(color = Color(0x22000000))
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AboutSheet(onDismiss: () -> Unit) {
-    val ctx = LocalContext.current
-    val versionName = remember {
-        runCatching {
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
-        }.getOrDefault("1.0.0")
-    }
-    val versionCode = remember {
-        runCatching {
-            if (android.os.Build.VERSION.SDK_INT >= 28)
-                ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode
-            else
-                @Suppress("DEPRECATION")
-                ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionCode.toLong()
-        }.getOrDefault(0L)
-    }
+// ========================
+//  辅助方法
+// ========================
 
-    val githubUrl = "https://github.com/juechichuan/NyaApp"
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFFFFFBFC)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 36.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // 应用图标
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .background(Color(0xFFFFF5F8), RoundedCornerShape(20.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("🐱", fontSize = 36.sp)
-            }
-            Spacer(Modifier.height(12.dp))
-            Text("喵输入法助手", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-            Text(
-                "v$versionName ($versionCode)",
-                fontSize = 13.sp,
-                color = Color.Gray,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-
-            Spacer(Modifier.height(24.dp))
-            HorizontalDivider(color = Color(0x22000000))
-            Spacer(Modifier.height(16.dp))
-
-            // 关于应用
-            AboutItem(title = "关于应用", subtitle = "通过 Shizuku 自动在用户输入末尾追加文本（默认「喵」），适配 Android 16 / ColorOS 15")
-            Spacer(Modifier.height(12.dp))
-            AboutItem(title = "应用版本", subtitle = "v$versionName ($versionCode) · targetSDK ${android.os.Build.VERSION.SDK_INT}")
-            Spacer(Modifier.height(12.dp))
-            AboutItem(title = "开源协议", subtitle = "MIT License · 代码可自由使用")
-            Spacer(Modifier.height(16.dp))
-
-            // 源代码
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        val i = Intent(Intent.ACTION_VIEW, Uri.parse(githubUrl))
-                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        ctx.startActivity(i)
-                    }
-                    .padding(vertical = 12.dp)
-                    .padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Code, null, tint = Color(0xFFE25C8A))
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("源代码开放", fontWeight = FontWeight.Medium)
-                    Text(githubUrl, fontSize = 12.sp, color = Color.Gray)
-                }
-                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray)
-            }
-            HorizontalDivider(color = Color(0x22000000))
-            Spacer(Modifier.height(20.dp))
-
-            // 赞助
-            SectionLabel("赞助作者")
-            Spacer(Modifier.height(8.dp))
-            Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF5F8)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text("如果这个 App 帮助到你", fontWeight = FontWeight.Medium)
-                    Text(
-                        "可以请作者喝杯奶茶 ☕\n开发者邮箱：3627714945@qq.com",
-                        fontSize = 12.sp,
-                        color = Color.Gray,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-
-            // 赞赏码图片
-            Text("感谢你的支持 ❤️", fontSize = 13.sp, color = Color.Gray)
-            Spacer(Modifier.height(8.dp))
-            val sponsorBitmap = remember(ctx) {
-                runCatching {
-                    android.graphics.BitmapFactory.decodeResource(ctx.resources, R.drawable.ic_sponsor_code)
-                }.getOrNull()
-            }
-            if (sponsorBitmap != null) {
-                Image(
-                    bitmap = sponsorBitmap.asImageBitmap(),
-                    contentDescription = "赞赏码",
-                    modifier = Modifier
-                        .size(220.dp)
-                        .background(Color.White, RoundedCornerShape(12.dp))
-                        .padding(8.dp)
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Text("谢谢赞赏喵", fontSize = 13.sp, color = Color(0xFFE25C8A), fontWeight = FontWeight.Medium)
-            Text("的赞赏码", fontSize = 12.sp, color = Color.Gray)
-        }
-    }
-}
-
-@Composable
-private fun AboutItem(title: String, subtitle: String) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(title, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-        Text(
-            subtitle,
-            fontSize = 12.sp,
-            color = Color.Gray,
-            modifier = Modifier.padding(top = 2.dp)
-        )
-    }
-}
-
-@Composable
-private fun ActionButton(
-    title: String,
-    subtitle: String,
-    primary: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    enabled: Boolean = true,
-    onClick: () -> Unit
-) {
-    if (primary) {
-        Button(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFFE25C8A),
-                contentColor = Color.White
-            ),
-            contentPadding = PaddingValues(14.dp)
-        ) {
-            Column(horizontalAlignment = Alignment.Start, modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(icon, null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                }
-                Spacer(Modifier.height(3.dp))
-                Text(subtitle, fontSize = 11.sp, color = Color(0xFFFFF0F4), lineHeight = 14.sp)
-            }
-        }
-    } else {
-        OutlinedButton(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            contentPadding = PaddingValues(14.dp)
-        ) {
-            Column(horizontalAlignment = Alignment.Start, modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(icon, null, modifier = Modifier.size(20.dp), tint = Color(0xFF188038))
-                    Spacer(Modifier.width(8.dp))
-                    Text(title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = Color(0xFF188038))
-                }
-                Spacer(Modifier.height(3.dp))
-                Text(subtitle, fontSize = 11.sp, color = Color.Gray, lineHeight = 14.sp)
-            }
-        }
-    }
+private fun isAccessibilityServiceEnabled(ctx: android.content.Context): Boolean {
+    val enabled = runCatching {
+        Settings.Secure.getInt(ctx.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1
+    }.getOrDefault(false)
+    if (!enabled) return false
+    val targetComponent = "${ctx.packageName}/com.nya.app.service.NyaAccessibilityService"
+    val services = Settings.Secure.getString(
+        ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ).orEmpty()
+    return services.split(':').any { it.equals(targetComponent, ignoreCase = true) }
 }

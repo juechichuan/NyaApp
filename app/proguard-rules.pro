@@ -1,3 +1,9 @@
-# 暂不启用混淆；如后续开启，需要保留 Shizuku 与无障碍相关类
--keep class dev.rikka.shizuku.** { *; }
+# 保留无障碍服务类（反射调用）
 -keep class com.nya.app.service.** { *; }
+-keep class com.nya.app.NyaApplication { *; }
+
+# Compose
+-dontwarn androidx.compose.**
+
+# Kotlin
+-dontwarn kotlin.**

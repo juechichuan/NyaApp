@@ -265,8 +265,7 @@ private fun AppPickerScreen(
                         Text(
                             "检测到仅 ${apps.size} 个应用。可能原因：\n" +
                             "1. Android 11+ 包可见性限制\n" +
-                            "2. 系统对应用读取做了隐私拦截\n\n" +
-                            "建议：通过 Shizuku 授权后，可获取完整应用列表。",
+                            "2. 系统对应用读取做了隐私拦截",
                             fontSize = 12.sp,
                             color = Color(0xFF5D4037),
                             modifier = Modifier.padding(top = 4.dp)
