@@ -21,8 +21,7 @@ class NyaApplication : Application() {
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
         instance = this
-        // Shizuku Provider 初始化（官方要求尽早调用）
-        Shizuku.onCreate(base)
+        // ShizukuProvider 会在被系统加载时自动初始化，无需手动调用
     }
 
     override fun onCreate() {
