@@ -577,25 +577,20 @@ private fun DelaySliderCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                val presets = when {
-                    maxSeconds <= 3f && minSeconds < 0.4f -> floatArrayOf(0.5f, 1.0f, 1.5f)
-                    else -> floatArrayOf(0.5f, 1.0f, 2.0f, 3.0f)
-                }
+                val presets = floatArrayOf(0.5f, 1.0f, 2.0f, 3.0f)
                 presets.forEach { preset ->
+                    val label: String = if (preset < 1f) "${(preset * 1000).toInt()}ms" else "${preset.toInt()}s"
+                    val selected = kotlin.math.abs(seconds - preset) < 0.05f
                     AssistChip(
                         onClick = { onSecondsChanged(preset) },
-                        label = {
-                            Text(
-                                if (preset < 1) "${(preset * 1000).toInt()}ms" else "${(preset.toInt())}s",
-                                fontSize = 11.sp
-                            )
-                        },
+                        label = { Text(label, fontSize = 11.sp) },
                         colors = AssistChipDefaults.assistChipColors(
-                            containerColor = if (kotlin.math.abs(seconds - preset) < 0.05f) Color(0xFFFFCDD2) else Color.White,
+                            containerColor = if (selected) Color(0xFFFFCDD2) else Color.White,
                             labelColor = Color(0xFF5D4037)
                         ),
-                        border = AssistChipDefaults.assistChipBorder(
-                            borderColor = Color(0x22E91E63)
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = androidx.compose.foundation.layout.BorderStrokeDefaults.Width,
+                            brush = androidx.compose.ui.graphics.SolidColor(Color(0x22E91E63))
                         )
                     )
                 }
