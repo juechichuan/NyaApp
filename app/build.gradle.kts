@@ -12,8 +12,10 @@ android {
         applicationId = "com.nya.app"
         minSdk = 24 // Android 7.0，兼容绝大多数设备
         targetSdk = 35 // Android 15（向上兼容 Android 16）
-        versionCode = 1
-        versionName = "1.0.0"
+        // 版本号规则：小更新+0.01，大更新+0.1
+        // 1.00 初始版 → 1.01 移除Shizuku+修复关于闪退 → 1.11 自定义停顿时间
+        versionCode = 12
+        versionName = "1.11"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
