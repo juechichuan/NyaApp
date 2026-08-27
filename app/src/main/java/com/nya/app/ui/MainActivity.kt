@@ -74,6 +74,13 @@ private fun NyaAppScreen(
     var a11yEnabled by remember { mutableStateOf(isAccessibilityServiceEnabled(ctx)) }
     val serviceRunning = NyaAccessibilityService.isRunning()
 
+    // 手动检测：用户手动点击后刷新 tick → 强制重新计算权限状态
+    var refreshTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(refreshTick) {
+        a11yEnabled = withContext(Dispatchers.Default) { isAccessibilityServiceEnabled(ctx) }
+    }
+    val serviceRunningNow = remember(refreshTick) { NyaAccessibilityService.isRunning() }
+
     var showContentDialog by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
@@ -111,7 +118,7 @@ private fun NyaAppScreen(
             Spacer(Modifier.height(8.dp))
             StatusGrid(
                 a11yEnabled = a11yEnabled,
-                serviceRunning = serviceRunning,
+                serviceRunning = serviceRunningNow,
                 masterEnabled = masterEnabled,
                 isGlobalMode = isGlobalMode,
                 appendMode = appendMode
@@ -257,9 +264,57 @@ private fun NyaAppScreen(
                 }
             }
 
+            Spacer(Modifier.height(12.dp))
+
+            // 手动检测按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = { refreshTick++ },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("🔄 手动检测权限状态")
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (a11yEnabled) Icons.Default.CheckCircle else Icons.Default.Close,
+                            contentDescription = null,
+                            tint = if (a11yEnabled) Color(0xFF4CAF50) else Color(0xFFF44336),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (a11yEnabled) "权限已授予" else "权限未授予",
+                            fontSize = 12.sp,
+                            color = if (a11yEnabled) Color(0xFF4CAF50) else Color(0xFFF44336)
+                        )
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (serviceRunningNow) Icons.Default.CheckCircle else Icons.Default.Close,
+                            contentDescription = null,
+                            tint = if (serviceRunningNow) Color(0xFF4CAF50) else Color(0xFFF44336),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (serviceRunningNow) "服务运行中" else "服务未运行",
+                            fontSize = 12.sp,
+                            color = if (serviceRunningNow) Color(0xFF4CAF50) else Color(0xFFF44336)
+                        )
+                    }
+                }
+            }
+
             Spacer(Modifier.height(8.dp))
             Text(
-                "提示：返回 App 后会自动刷新状态",
+                "提示：若授权后仍显示未运行，可重启 App 或多次点击「手动检测」刷新",
                 fontSize = 11.sp,
                 color = Color.Gray
             )

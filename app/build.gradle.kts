@@ -13,9 +13,9 @@ android {
         minSdk = 24 // Android 7.0，兼容绝大多数设备
         targetSdk = 35 // Android 15（向上兼容 Android 16）
         // 版本号规则：小更新+0.01，大更新+0.1
-        // 1.11 → 1.12 修复：删除文字/空文本时不误触发追加
-        versionCode = 13
-        versionName = "1.12"
+        // 1.12 回退删除字符三层保护 + 新增手动检测无障碍权限状态按钮 → 1.13
+        versionCode = 14
+        versionName = "1.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
