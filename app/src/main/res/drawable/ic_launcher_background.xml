@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标背景层：统一天蓝色（与前景图背景色一致），避免 mask 边缘出现色差或接缝 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#FFF5F8" />
+    <solid android:color="#6BC7F7" />
 </shape>
