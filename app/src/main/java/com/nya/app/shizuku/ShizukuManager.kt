@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
@@ -11,8 +12,6 @@ import android.provider.Settings
 import android.util.Log
 import rikka.shizuku.Shizuku
 import rikka.shizuku.Shizuku.UserServiceArgs
-import rikka.shizuku.ShizukuBinderWrapper
-import rikka.shizuku.SystemServiceHelper
 
 private const val TAG = "ShizukuManager"
 private const val REQUEST_CODE_PERMISSION = 10001
@@ -41,7 +40,7 @@ class ShizukuManager(private val context: Context) {
 
     @Volatile private var shellService: INyaShellService? = null
 
-    private val userServiceConnection = object : Shizuku.UserServiceConnection {
+    private val userServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(componentName: ComponentName, iBinder: IBinder) {
             shellService = INyaShellService.Stub.asInterface(iBinder)
             Log.i(TAG, "NyaShellService connected")
@@ -96,10 +95,8 @@ class ShizukuManager(private val context: Context) {
             }
             true
         }.getOrElse {
-            // Sui 无独立 App，但 getRemoteUserId() 会返回 "sui"
-            runCatching {
-                Shizuku.getRemoteUserId()?.lowercase() == "sui"
-            }.getOrDefault(false)
+            // Sui 无独立 App，检查 Shizuku binder 是否可用即可
+            runCatching { Shizuku.pingBinder() }.getOrDefault(false)
         }
     }
 

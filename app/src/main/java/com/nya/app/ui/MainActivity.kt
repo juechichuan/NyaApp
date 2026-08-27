@@ -43,7 +43,11 @@ class MainActivity : ComponentActivity() {
         prefs = (application as NyaApplication).prefs
 
         setContent {
-            MaterialTheme(colorScheme = dynamicLightColorScheme()) {
+            MaterialTheme(colorScheme = lightColorScheme(
+                primary = Color(0xFFE91E63),
+                secondary = Color(0xFFF48FB1),
+                tertiary = Color(0xFF7C4DFF)
+            )) {
                 NyaAppScreen(
                     shizuku = shizuku,
                     prefs = prefs,
@@ -57,7 +61,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // 刷新 UI：权限/服务状态可能变化
         setContent {
-            MaterialTheme(colorScheme = dynamicLightColorScheme()) {
+            MaterialTheme(colorScheme = lightColorScheme(
+                primary = Color(0xFFE91E63),
+                secondary = Color(0xFFF48FB1),
+                tertiary = Color(0xFF7C4DFF)
+            )) {
                 NyaAppScreen(shizuku = shizuku, prefs = prefs, activity = this@MainActivity)
             }
         }
