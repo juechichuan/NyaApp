@@ -249,12 +249,13 @@ class NyaAccessibilityService : AccessibilityService() {
     }
 
     // ============================
-    //  模式 2：标点符号后追加（末尾是标点时立即追加，不打标点不追加）
+    //  模式 2：标点符号后追加（末尾是标点时 0.7s 后追加，继续输入则取消）
     // ============================
     private fun handlePunctuationAppend(node: AccessibilityNodeInfo) {
         val currentText = node.text?.toString().orEmpty()
         if (currentText.isBlank()) {
             lastAppendedText = null
+            cancelPendingAppend()
             return
         }
         if (currentText == lastAppendedText) return
@@ -265,6 +266,7 @@ class NyaAccessibilityService : AccessibilityService() {
             '.', ',', '!', '?', ';', ':', '~', '～', '…')
         if (currentText.last() !in punctuations) {
             Log.d(TAG, "标点模式：末尾非标点（${currentText.last()}），跳过")
+            cancelPendingAppend()
             return
         }
 
@@ -273,21 +275,44 @@ class NyaAccessibilityService : AccessibilityService() {
             currentText[currentText.length - appendContent.length - 1] in punctuations
         ) return
 
-        val newText = currentText + appendContent
-        appending = true
-        try {
-            val ok = appendTextToNode(node, newText)
-            if (ok) {
-                lastAppendedText = newText
-                Log.i(TAG, "✓ 标点后已追加「$appendContent」→ \"$newText\"")
-            } else {
-                Log.w(TAG, "标点追加失败")
+        // 0.7s 延迟追加（延迟期间用户继续输入则取消）
+        cancelPendingAppend()
+        val editor = node
+        Log.d(TAG, "标点模式：检测到标点，700ms 后追加「$appendContent」 → 当前: \"$currentText\"")
+        val r = Runnable {
+            appending = true
+            try {
+                val latestText = editor.text?.toString().orEmpty()
+                if (latestText.isBlank()) {
+                    Log.d(TAG, "标点模式：计时到达，文本已清空，跳过")
+                    return@Runnable
+                }
+                if (latestText.endsWith(appendContent)) {
+                    Log.d(TAG, "标点模式：计时到达，末尾已是「$appendContent」，跳过")
+                    return@Runnable
+                }
+                // 再次确认末尾是标点（用户可能在延迟内又输入了文字）
+                val lastChar = latestText.lastOrNull()
+                if (lastChar != null && lastChar !in punctuations) {
+                    Log.d(TAG, "标点模式：计时到达，但末尾已非标点（$lastChar），跳过")
+                    return@Runnable
+                }
+                val newText = latestText + appendContent
+                val ok = appendTextToNode(editor, newText)
+                if (ok) {
+                    lastAppendedText = newText
+                    Log.i(TAG, "✓ 标点后已追加「$appendContent」→ \"$newText\"")
+                } else {
+                    Log.w(TAG, "标点追加失败")
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "标点追加异常", t)
+            } finally {
+                mainHandler.postDelayed({ appending = false }, 200)
             }
-        } catch (t: Throwable) {
-            Log.e(TAG, "标点追加异常", t)
-        } finally {
-            mainHandler.postDelayed({ appending = false }, 200)
         }
+        pendingAppendRunnable = r
+        mainHandler.postDelayed(r, 700)
     }
 
     private fun cancelPendingAppend() {

@@ -1,10 +1,12 @@
 package com.nya.app.ui
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,7 +20,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -590,6 +594,8 @@ private fun AboutSheet(onDismiss: () -> Unit) {
         }.getOrDefault(0L)
     }
 
+    val githubUrl = "https://github.com/juechichuan/NyaApp"
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFFFFFBFC)
@@ -598,7 +604,8 @@ private fun AboutSheet(onDismiss: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp)
-                .padding(bottom = 36.dp),
+                .padding(bottom = 36.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // 应用图标
@@ -629,6 +636,30 @@ private fun AboutSheet(onDismiss: () -> Unit) {
             AboutItem(title = "应用版本", subtitle = "v$versionName ($versionCode) · targetSDK ${android.os.Build.VERSION.SDK_INT}")
             Spacer(Modifier.height(12.dp))
             AboutItem(title = "开源协议", subtitle = "MIT License · 代码可自由使用")
+            Spacer(Modifier.height(16.dp))
+
+            // 源代码
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        val i = Intent(Intent.ACTION_VIEW, Uri.parse(githubUrl))
+                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        ctx.startActivity(i)
+                    }
+                    .padding(vertical = 12.dp)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Code, null, tint = Color(0xFFE25C8A))
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("源代码开放", fontWeight = FontWeight.Medium)
+                    Text(githubUrl, fontSize = 12.sp, color = Color.Gray)
+                }
+                Icon(Icons.Default.ChevronRight, null, tint = Color.Gray)
+            }
+            HorizontalDivider(color = Color(0x22000000))
             Spacer(Modifier.height(20.dp))
 
             // 赞助
@@ -642,13 +673,29 @@ private fun AboutSheet(onDismiss: () -> Unit) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text("如果这个 App 帮助到你", fontWeight = FontWeight.Medium)
                     Text(
-                        "可以请作者喝杯奶茶 ☕\n开发者邮箱：nya@example.com\n（这里可以替换为你的支付宝/微信收款码图片）",
+                        "可以请作者喝杯奶茶 ☕\n开发者邮箱：3627714945@qq.com",
                         fontSize = 12.sp,
                         color = Color.Gray,
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
             }
+            Spacer(Modifier.height(12.dp))
+
+            // 赞赏码图片
+            Text("感谢你的支持 ❤️", fontSize = 13.sp, color = Color.Gray)
+            Spacer(Modifier.height(8.dp))
+            Image(
+                painterResource = R.drawable.ic_sponsor_code,
+                contentDescription = "赞赏码",
+                modifier = Modifier
+                    .size(220.dp)
+                    .background(Color.White, RoundedCornerShape(12.dp))
+                    .padding(8.dp)
+            )
+            Spacer(Modifier.height(4.dp))
+            Text("谢谢赞赏喵", fontSize = 13.sp, color = Color(0xFFE25C8A), fontWeight = FontWeight.Medium)
+            Text("的赞赏码", fontSize = 12.sp, color = Color.Gray)
         }
     }
 }
