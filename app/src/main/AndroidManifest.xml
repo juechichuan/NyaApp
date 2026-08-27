@@ -41,6 +41,14 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density"
             android:theme="@style/Theme.NyaApp" />
 
+        <!-- 关于 Activity -->
+        <activity
+            android:name=".ui.AboutActivity"
+            android:exported="false"
+            android:label="关于"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:theme="@style/Theme.NyaApp" />
+
         <!-- 核心：无障碍服务，负责监听输入事件并追加"喵" -->
         <service
             android:name=".service.NyaAccessibilityService"

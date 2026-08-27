@@ -1,13 +1,10 @@
 package com.nya.app.ui
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -22,14 +19,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nya.app.NyaApplication
-import com.nya.app.R
 import com.nya.app.data.AppendMode
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
@@ -80,7 +75,6 @@ private fun NyaAppScreen(
     val serviceRunning = NyaAccessibilityService.isRunning()
 
     var showContentDialog by remember { mutableStateOf(false) }
-    var showAbout by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
 
@@ -91,7 +85,10 @@ private fun NyaAppScreen(
                     Text("🐱 喵输入法助手", fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
                 },
                 actions = {
-                    TextButton(onClick = { showAbout = true }) {
+                    TextButton(onClick = {
+                        val i = Intent(activity, AboutActivity::class.java)
+                        activity.startActivity(i)
+                    }) {
                         Text("关于", color = Color(0xFFE91E63), fontWeight = FontWeight.Medium)
                     }
                 },
@@ -301,104 +298,6 @@ private fun NyaAppScreen(
             }
         )
     }
-
-    // ---------- 关于 Dialog（用 AlertDialog 替代 ModalBottomSheet，规避 ColorOS 崩溃）----------
-    if (showAbout) {
-        AboutDialog(onDismiss = { showAbout = false })
-    }
-}
-
-// ========================
-//  关于对话框
-// ========================
-
-@Composable
-private fun AboutDialog(onDismiss: () -> Unit) {
-    val ctx = LocalContext.current
-    val versionName = remember {
-        runCatching {
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
-        }.getOrDefault("1.0.0")
-    }
-    val githubUrl = "https://github.com/juechichuan/NyaApp"
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("🐱", fontSize = 24.sp)
-                Spacer(Modifier.width(8.dp))
-                Text("喵输入法助手", fontWeight = FontWeight.Bold)
-            }
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState())
-            ) {
-                Text("v$versionName", fontSize = 13.sp, color = Color.Gray)
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = Color(0x22000000))
-                Spacer(Modifier.height(12.dp))
-
-                Text("通过无障碍服务自动在用户输入末尾追加文本（默认「喵」），适配 Android 16 / ColorOS 15", fontSize = 12.sp)
-                Spacer(Modifier.height(8.dp))
-                Text("开源协议：MIT License", fontSize = 12.sp, color = Color.Gray)
-                Spacer(Modifier.height(12.dp))
-
-                // 源代码
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            val i = Intent(Intent.ACTION_VIEW, Uri.parse(githubUrl))
-                            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            ctx.startActivity(i)
-                        }
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("🔗", fontSize = 16.sp)
-                    Spacer(Modifier.width(8.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("源代码开放", fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                        Text(githubUrl, fontSize = 11.sp, color = Color.Gray)
-                    }
-                }
-
-                Spacer(Modifier.height(16.dp))
-                HorizontalDivider(color = Color(0x22000000))
-                Spacer(Modifier.height(12.dp))
-
-                // 赞助
-                Text("赞助作者", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFFE25C8A))
-                Spacer(Modifier.height(4.dp))
-                Text("开发者邮箱：3627714945@qq.com", fontSize = 12.sp, color = Color.Gray)
-                Spacer(Modifier.height(8.dp))
-
-                // 赞赏码图片
-                val sponsorBitmap = remember(ctx) {
-                    runCatching {
-                        android.graphics.BitmapFactory.decodeResource(ctx.resources, R.drawable.ic_sponsor_code)
-                    }.getOrNull()
-                }
-                if (sponsorBitmap != null) {
-                    Image(
-                        bitmap = sponsorBitmap.asImageBitmap(),
-                        contentDescription = "赞赏码",
-                        modifier = Modifier
-                            .size(180.dp)
-                            .background(Color.White, RoundedCornerShape(8.dp))
-                            .padding(4.dp)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text("感谢你的支持 ❤️", fontSize = 12.sp, color = Color(0xFFE25C8A))
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
-        }
-    )
 }
 
 // ========================
