@@ -232,25 +232,27 @@ class NyaAccessibilityService : AccessibilityService() {
     /** 在 root 节点下查找当前处于焦点的可编辑 EditText */
     private fun findFocusedEditText(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         root ?: return null
-        if (isEditable(root) && root.isFocused) return root
-        // 优先找 accessibility focus
+        // AccessibilityService 上有 findFocus(int)，正确取输入焦点
         val focused = runCatching {
-            root.findFocus(AccessibilityNodeInfo.ACCESSIBILITY_FOCUS_INPUT)
-                ?: root.findFocus(AccessibilityNodeInfo.ACCESSIBILITY_FOCUS)
+            this.findFocus(AccessibilityNodeInfo.ACCESSIBILITY_FOCUS_INPUT)
         }.getOrNull()
         if (focused != null && isEditable(focused)) return focused
-        // 退化：DFS 找第一个 editable
+        // 退化：DFS 找第一个 isFocused 的 editable，再退到任意 editable
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
+        var firstEditable: AccessibilityNodeInfo? = null
         while (queue.isNotEmpty()) {
             val n = queue.removeFirst()
-            if (isEditable(n)) return n
+            if (isEditable(n)) {
+                if (n.isFocused) return n
+                if (firstEditable == null) firstEditable = n
+            }
             for (i in 0 until n.childCount) {
                 val c = n.getChild(i) ?: continue
                 queue.add(c)
             }
         }
-        return null
+        return firstEditable
     }
 
     // ============================
