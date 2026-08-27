@@ -24,6 +24,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -686,14 +687,21 @@ private fun AboutSheet(onDismiss: () -> Unit) {
             // 赞赏码图片
             Text("感谢你的支持 ❤️", fontSize = 13.sp, color = Color.Gray)
             Spacer(Modifier.height(8.dp))
-            Image(
-                painterResource = R.drawable.ic_sponsor_code,
-                contentDescription = "赞赏码",
-                modifier = Modifier
-                    .size(220.dp)
-                    .background(Color.White, RoundedCornerShape(12.dp))
-                    .padding(8.dp)
-            )
+            val sponsorBitmap = remember(ctx) {
+                runCatching {
+                    android.graphics.BitmapFactory.decodeResource(ctx.resources, R.drawable.ic_sponsor_code)
+                }.getOrNull()
+            }
+            if (sponsorBitmap != null) {
+                Image(
+                    bitmap = sponsorBitmap.asImageBitmap(),
+                    contentDescription = "赞赏码",
+                    modifier = Modifier
+                        .size(220.dp)
+                        .background(Color.White, RoundedCornerShape(12.dp))
+                        .padding(8.dp)
+                )
+            }
             Spacer(Modifier.height(4.dp))
             Text("谢谢赞赏喵", fontSize = 13.sp, color = Color(0xFFE25C8A), fontWeight = FontWeight.Medium)
             Text("的赞赏码", fontSize = 12.sp, color = Color.Gray)
