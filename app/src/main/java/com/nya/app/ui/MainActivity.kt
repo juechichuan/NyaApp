@@ -589,8 +589,8 @@ private fun DelaySliderCard(
                             labelColor = Color(0xFF5D4037)
                         ),
                         border = androidx.compose.foundation.BorderStroke(
-                            width = androidx.compose.foundation.layout.BorderStrokeDefaults.Width,
-                            brush = androidx.compose.ui.graphics.SolidColor(Color(0x22E91E63))
+                            width = 1.dp,
+                            color = Color(0x22E91E63)
                         )
                     )
                 }
