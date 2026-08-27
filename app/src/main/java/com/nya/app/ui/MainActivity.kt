@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nya.app.NyaApplication
+import com.nya.app.R
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
 import com.nya.app.shizuku.ShizukuManager
