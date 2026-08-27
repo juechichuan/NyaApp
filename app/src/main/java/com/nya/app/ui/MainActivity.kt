@@ -16,7 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -447,7 +447,7 @@ private fun StatusRow(label: String, ok: Boolean) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val color = if (ok) Color(0xFF188038) else Color(0xFFD93025)
             Icon(
-                imageVector = if (ok) Icons.Default.CheckCircle else Icons.Default.Error,
+                imageVector = if (ok) Icons.Default.CheckCircle else Icons.Default.Close,
                 contentDescription = null,
                 tint = color,
                 modifier = Modifier.size(18.dp)
