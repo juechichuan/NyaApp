@@ -1,10 +1,14 @@
 package com.nya.app.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,11 +27,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nya.app.NyaApplication
 import com.nya.app.data.AppendMode
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
+import com.nya.app.service.NyaForegroundService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,9 +42,15 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var prefs: NyaPrefs
 
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) startForegroundServiceCompat()
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = (application as NyaApplication).prefs
+        ensureForegroundService()
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Color(0xFFE91E63),
@@ -46,6 +58,31 @@ class MainActivity : ComponentActivity() {
                 tertiary = Color(0xFF7C4DFF)
             )) {
                 NyaAppScreen(prefs = prefs, activity = this@MainActivity)
+            }
+        }
+    }
+
+    /** 启动常驻通知前台服务（Android 13+ 先请求通知权限） */
+    private fun ensureForegroundService() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+        startForegroundServiceCompat()
+    }
+
+    private fun startForegroundServiceCompat() {
+        runCatching {
+            val i = Intent(this, NyaForegroundService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(this, i)
+            } else {
+                startService(i)
             }
         }
     }
