@@ -1,10 +1,11 @@
 {
-  "versionCode": 16,
-  "versionName": "1.43",
-  "minVersionCode": 16,
+  "versionCode": 17,
+  "versionName": "1.53",
+  "minVersionCode": 17,
   "force": false,
-  "downloadUrl": "https://github.com/juechichuan/NyaApp/releases/download/v1.43/app-debug.apk",
-  "title": "发现新版本 v1.43",
-  "message": "本次更新：新增云端强制更新功能。\n以后每次新版都会自动检查并提醒，重要版本必须更新后才能使用。",
+  "downloadUrl": "https://github.com/juechichuan/NyaApp/releases/download/v1.53/app-debug.apk",
+  "title": "发现新版本 v1.53",
+  "message": "本次更新：下载进度条 + MD5完整性校验 + 热更新体验优化。",
+  "md5": "",
   "apkSizeBytes": 12600000
 }

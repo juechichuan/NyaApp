@@ -37,9 +37,11 @@ import com.nya.app.data.AppendMode
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
 import com.nya.app.service.NyaForegroundService
+import com.nya.app.update.DownloadState
 import com.nya.app.update.UpdateDecision
-import com.nya.app.update.enqueueUpdateDownload
+import com.nya.app.update.downloadApkWithProgress
 import com.nya.app.update.fetchUpdateInfo
+import com.nya.app.update.tryInstallApk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -53,8 +55,13 @@ class MainActivity : ComponentActivity() {
             if (granted) startForegroundServiceCompat()
         }
 
-    // 安装未知来源权限请求（8.0+）—— 用户点「立即更新」按钮，如果没授权就跳到系统页
-    private fun ensureInstallPermissionThenDownload(decision: UpdateDecision) {
+    /** 启动下载流程：先检查安装权限，再启动带进度的协程下载 */
+    private fun startUpdateDownload(
+        decision: UpdateDecision,
+        scope: kotlinx.coroutines.CoroutineScope,
+        onStateChange: (DownloadState) -> Unit
+    ) {
+        // 检查安装权限
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val allowed = packageManager.canRequestPackageInstalls()
             if (!allowed) {
@@ -66,7 +73,11 @@ class MainActivity : ComponentActivity() {
                 return
             }
         }
-        enqueueUpdateDownload(this, decision.info)
+        scope.launch {
+            downloadApkWithProgress(this@MainActivity, decision.info) { state ->
+                onStateChange(state)
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,14 +94,102 @@ class MainActivity : ComponentActivity() {
                 tertiary = Color(0xFF7C4DFF)
             )) {
                 val ctx = LocalContext.current as MainActivity
+                val scope = rememberCoroutineScope()
                 var updateDecision by remember { mutableStateOf<UpdateDecision?>(null) }
+                var downloadState by remember { mutableStateOf<DownloadState>(DownloadState.Idle) }
                 LaunchedEffect(Unit) {
                     val info = withContext(Dispatchers.IO) { fetchUpdateInfo() }
                     if (info != null) updateDecision = info.evaluate(localVC)
                 }
-                // —— 强制更新 Dialog：不可关闭，不更新无法使用 ——
+
+                // —— 下载中：进度条 Dialog ——
+                when (val ds = downloadState) {
+                    is DownloadState.Progress -> {
+                        AlertDialog(
+                            onDismissRequest = { /* 下载中不可取消 */ },
+                            title = { Text("⬇️ 正在下载更新", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column {
+                                    LinearProgressIndicator(
+                                        progress = { ds.percent / 100f },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = Color(0xFFE25C8A),
+                                        trackColor = Color(0xFFFCE4EC)
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        "${ds.percent}%  (${formatBytes(ds.downloadedBytes)} / ${formatBytes(ds.totalBytes)})",
+                                        fontSize = 12.sp, color = Color.Gray
+                                    )
+                                }
+                            },
+                            confirmButton = { },
+                            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+                        )
+                    }
+                    is DownloadState.Verifying -> {
+                        AlertDialog(
+                            onDismissRequest = { },
+                            title = { Text("🔐 正在校验完整性", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(32.dp),
+                                        color = Color(0xFFE25C8A),
+                                        strokeWidth = 3.dp
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("正在计算 MD5 并校验文件...", fontSize = 12.sp, color = Color.Gray)
+                                }
+                            },
+                            confirmButton = { },
+                            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+                        )
+                    }
+                    is DownloadState.Success -> {
+                        LaunchedEffect(Unit) {
+                            tryInstallApk(ctx, ds.apkFile)
+                            downloadState = DownloadState.Idle
+                        }
+                    }
+                    is DownloadState.Failed -> {
+                        AlertDialog(
+                            onDismissRequest = {
+                                if (!(updateDecision?.forced == true))
+                                    downloadState = DownloadState.Idle
+                            },
+                            title = { Text("❌ 更新失败", fontWeight = FontWeight.Bold) },
+                            text = { Text(ds.reason) },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        val decision = updateDecision
+                                        if (decision != null) {
+                                            ctx.startUpdateDownload(decision, scope) { downloadState = it }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFFE25C8A)
+                                    )
+                                ) { Text("重试") }
+                            },
+                            dismissButton = {
+                                if (!(updateDecision?.forced == true)) {
+                                    TextButton(onClick = { downloadState = DownloadState.Idle }) { Text("关闭") }
+                                }
+                            },
+                            properties = DialogProperties(
+                                dismissOnBackPress = !(updateDecision?.forced == true),
+                                dismissOnClickOutside = !(updateDecision?.forced == true)
+                            )
+                        )
+                    }
+                    DownloadState.Idle -> { /* 无操作 */ }
+                }
+
+                // —— 强制更新 Dialog：不可关闭 ——
                 val decision = updateDecision
-                if (decision != null && decision.forced) {
+                if (decision != null && decision.forced && downloadState is DownloadState.Idle) {
                     AlertDialog(
                         onDismissRequest = { /* 强制更新，不允许关闭 */ },
                         title = {
@@ -108,7 +207,8 @@ class MainActivity : ComponentActivity() {
                                 Spacer(Modifier.height(12.dp))
                                 Text(
                                     "本地版本: $localVN ($localVC)\n" +
-                                            "新版本: ${decision.info.versionName} (${decision.info.versionCode})",
+                                            "新版本: ${decision.info.versionName} (${decision.info.versionCode})" +
+                                            if (decision.info.md5.isNotBlank()) "\n已启用 MD5 校验" else "",
                                     fontSize = 12.sp,
                                     color = Color.Gray
                                 )
@@ -116,7 +216,7 @@ class MainActivity : ComponentActivity() {
                         },
                         confirmButton = {
                             Button(
-                                onClick = { ctx.ensureInstallPermissionThenDownload(decision) },
+                                onClick = { ctx.startUpdateDownload(decision, scope) { downloadState = it } },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = Color(0xFFE25C8A),
                                     contentColor = Color.White
@@ -126,8 +226,8 @@ class MainActivity : ComponentActivity() {
                         dismissButton = { },
                         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
                     )
-                } else if (decision != null && decision.hasUpdate) {
-                    // 可选更新（非强制，minVersionCode 达标）
+                } else if (decision != null && decision.hasUpdate && downloadState is DownloadState.Idle) {
+                    // 可选更新
                     var showOptional by remember { mutableStateOf(true) }
                     if (showOptional) {
                         AlertDialog(
@@ -138,16 +238,16 @@ class MainActivity : ComponentActivity() {
                                     Text(decision.info.message.ifBlank { "可选更新：v${decision.info.versionName}" })
                                     Spacer(Modifier.height(12.dp))
                                     Text(
-                                        "新版本: ${decision.info.versionName} (${decision.info.versionCode})",
-                                        fontSize = 12.sp,
-                                        color = Color.Gray
+                                        "新版本: ${decision.info.versionName} (${decision.info.versionCode})" +
+                                                if (decision.info.md5.isNotBlank()) "\n已启用 MD5 校验" else "",
+                                        fontSize = 12.sp, color = Color.Gray
                                     )
                                 }
                             },
                             confirmButton = {
                                 Button(
                                     onClick = {
-                                        ctx.ensureInstallPermissionThenDownload(decision)
+                                        ctx.startUpdateDownload(decision, scope) { downloadState = it }
                                         showOptional = false
                                     }
                                 ) { Text("立即更新") }
@@ -210,6 +310,15 @@ class MainActivity : ComponentActivity() {
 // =========================================================
 //  Compose UI
 // =========================================================
+
+/** 格式化字节数为人类可读 */
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024) return "${bytes}B"
+    val kb = bytes / 1024.0
+    if (kb < 1024) return String.format("%.1fKB", kb)
+    val mb = kb / 1024.0
+    return String.format("%.1fMB", mb)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

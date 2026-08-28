@@ -1,27 +1,25 @@
 package com.nya.app.update
 
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.database.Cursor
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 private const val TAG = "NyaUpdate"
 
-// 云端 update.json 地址 —— 使用 GitHub main 分支 Raw 直链
-// 你每次发布新版本只需要改仓库根目录 update.json 里的 versionCode 和 downloadUrl
+// 云端 update.json 地址
 const val UPDATE_JSON_URL =
     "https://raw.githubusercontent.com/juechichuan/NyaApp/main/update.json"
 
@@ -32,18 +30,14 @@ data class UpdateInfo(
     val force: Boolean,
     val downloadUrl: String,
     val title: String,
-    val message: String
+    val message: String,
+    val md5: String
 ) {
-    /** 本地版本与云端对比的结果 */
     fun evaluate(localVersionCode: Int): UpdateDecision {
         val hasUpdate = versionCode > localVersionCode
         val mustUpdate = force && hasUpdate
         val belowMin = localVersionCode < minVersionCode
-        return UpdateDecision(
-            hasUpdate = hasUpdate,
-            forced = mustUpdate || belowMin,
-            info = this
-        )
+        return UpdateDecision(hasUpdate, mustUpdate || belowMin, this)
     }
 }
 
@@ -53,7 +47,16 @@ data class UpdateDecision(
     val info: UpdateInfo
 )
 
-/** 拉取云端版本配置 JSON 并解析成 UpdateInfo */
+/** 下载进度回调 */
+sealed class DownloadState {
+    object Idle : DownloadState()
+    data class Progress(val percent: Int, val downloadedBytes: Long, val totalBytes: Long) : DownloadState()
+    object Verifying : DownloadState()
+    data class Success(val apkFile: File) : DownloadState()
+    data class Failed(val reason: String) : DownloadState()
+}
+
+/** 拉取云端版本配置 JSON 并解析 */
 suspend fun fetchUpdateInfo(): UpdateInfo? = withContext(Dispatchers.IO) {
     runCatching {
         val url = URL(UPDATE_JSON_URL)
@@ -72,13 +75,22 @@ suspend fun fetchUpdateInfo(): UpdateInfo? = withContext(Dispatchers.IO) {
             force = jo.optBoolean("force", false),
             downloadUrl = jo.optString("downloadUrl", ""),
             title = jo.optString("title", "发现新版本"),
-            message = jo.optString("message", "")
+            message = jo.optString("message", ""),
+            md5 = jo.optString("md5", "").trim().lowercase()
         ).takeIf { it.versionCode > 0 && it.downloadUrl.isNotBlank() }
     }.onFailure { Log.e(TAG, "拉取 update.json 失败", it) }.getOrNull()
 }
 
-/** 下载 APK 并调用系统安装器（强制更新）。返回 DownloadManager 分配的 downloadId */
-fun enqueueUpdateDownload(context: Context, updateInfo: UpdateInfo): Long {
+/**
+ * 自定义流式下载 APK + MD5 校验。
+ * 通过 [onProgress] 回调实时报告下载百分比（0~100）。
+ * 下载完成后自动校验 MD5，不匹配则返回 Failed。
+ */
+suspend fun downloadApkWithProgress(
+    context: Context,
+    updateInfo: UpdateInfo,
+    onProgress: (DownloadState) -> Unit
+): Unit = withContext(Dispatchers.IO) {
     val apkFile = File(
         context.cacheDir,
         "apk/NyaApp-v${updateInfo.versionName}-${updateInfo.versionCode}.apk"
@@ -86,43 +98,94 @@ fun enqueueUpdateDownload(context: Context, updateInfo: UpdateInfo): Long {
     if (apkFile.parentFile?.exists() != true) apkFile.parentFile?.mkdirs()
     if (apkFile.exists()) apkFile.delete()
 
-    val request = DownloadManager.Request(Uri.parse(updateInfo.downloadUrl)).apply {
-        setTitle(updateInfo.title.ifBlank { "🐱 喵输入法助手更新" })
-        setDescription(updateInfo.message.ifBlank { "正在下载新版本..." })
-        setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        setDestinationUri(Uri.fromFile(apkFile))
-        allowScanningByMediaScanner()
-        setAllowedOverMetered(true)
-        setAllowedOverRoaming(true)
-    }
-    val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    var conn: HttpURLConnection? = null
+    var input: InputStream? = null
+    var output: FileOutputStream? = null
 
-    // 注册下载完成接收器 → 自动弹出安装
-    context.registerReceiver(
-        object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context, intent: Intent) {
-                val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-                val cursor: Cursor? = dm.query(DownloadManager.Query().setFilterById(id))
-                cursor?.use { c ->
-                    if (c.moveToFirst()) {
-                        val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                        if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                            val localUri =
-                                c.getString(c.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
-                            val file = File(Uri.parse(localUri).path!!)
-                            tryInstallApk(ctx, file)
-                        }
-                    }
+    runCatching {
+        val url = URL(updateInfo.downloadUrl)
+        conn = url.openConnection() as HttpURLConnection
+        conn!!.connectTimeout = 15000
+        conn!!.readTimeout = 30000
+        conn!!.setRequestProperty("Accept", "application/vnd.android.package-archive")
+        conn!!.instanceFollowRedirects = true
+        conn!!.connect()
+
+        val code = conn!!.responseCode
+        if (code != 200) {
+            onProgress(DownloadState.Failed("服务器返回 HTTP $code"))
+            return@runCatching
+        }
+
+        val total = conn!!.contentLengthLong  // -1 if unknown
+        input = conn!!.inputStream
+        output = FileOutputStream(apkFile)
+
+        val buffer = ByteArray(8192)
+        var downloaded = 0L
+        var lastReportedPercent = -1
+
+        while (true) {
+            val read = input!!.read(buffer)
+            if (read <= 0) break
+            output!!.write(buffer, 0, read)
+            downloaded += read
+            if (total > 0) {
+                val percent = (downloaded * 100 / total).toInt()
+                if (percent != lastReportedPercent && percent % 2 == 0) {
+                    lastReportedPercent = percent
+                    onProgress(DownloadState.Progress(percent, downloaded, total))
                 }
-                runCatching { ctx.unregisterReceiver(this) }
             }
-        },
-        IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-            Context.RECEIVER_NOT_EXPORTED else 0
-    )
+        }
+        output!!.flush()
+        onProgress(DownloadState.Progress(100, if (total > 0) total else apkFile.length(), total))
 
-    return dm.enqueue(request)
+        // —— MD5 校验 ——
+        onProgress(DownloadState.Verifying)
+        if (updateInfo.md5.isNotBlank()) {
+            val actualMd5 = computeMd5(apkFile)
+            if (actualMd5 != updateInfo.md5) {
+                Log.e(TAG, "MD5 校验失败: expected=${updateInfo.md5} actual=$actualMd5")
+                apkFile.delete()
+                onProgress(DownloadState.Failed("MD5 校验失败，文件可能被篡改或下载不完整"))
+                return@runCatching
+            }
+            Log.i(TAG, "MD5 校验通过 ✓")
+        } else {
+            Log.w(TAG, "云端未提供 md5，跳过校验")
+        }
+
+        if (apkFile.length() < 1024 * 1024) {
+            onProgress(DownloadState.Failed("下载文件过小 (${apkFile.length()} bytes)，可能不完整"))
+            return@runCatching
+        }
+
+        onProgress(DownloadState.Success(apkFile))
+
+    }.onFailure { e ->
+        Log.e(TAG, "下载失败", e)
+        apkFile.delete()
+        onProgress(DownloadState.Failed("下载异常: ${e.message ?: "未知错误"}"))
+    }
+
+    runCatching { input?.close() }
+    runCatching { output?.close() }
+    runCatching { conn?.disconnect() }
+}
+
+/** 计算文件 MD5（32位小写十六进制） */
+private fun computeMd5(file: File): String {
+    val md = MessageDigest.getInstance("MD5")
+    FileInputStream(file).use { fis ->
+        val buffer = ByteArray(8192)
+        while (true) {
+            val read = fis.read(buffer)
+            if (read <= 0) break
+            md.update(buffer, 0, read)
+        }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
 }
 
 /** 调起系统 APK 安装器 */
@@ -142,10 +205,8 @@ fun tryInstallApk(context: Context, apkFile: File) {
             }
             setDataAndType(uri, "application/vnd.android.package-archive")
         }
-        // Android 8.0+ 先检查是否允许安装未知来源，不允许则引导用户授权
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val pm = context.packageManager
-            val allowed = pm.canRequestPackageInstalls()
+            val allowed = context.packageManager.canRequestPackageInstalls()
             if (!allowed) {
                 val settingsIntent = Intent(
                     android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -157,11 +218,4 @@ fun tryInstallApk(context: Context, apkFile: File) {
         }
         context.startActivity(intent)
     }.onFailure { Log.e(TAG, "唤起安装器失败", it) }
-}
-
-// ===================== 调试用：下载文件是否完整 =====================
-fun isApkFileValid(file: File): Boolean {
-    if (!file.exists()) return false
-    if (file.length() < 1024 * 1024) return false // 小于 1MB 一定坏了
-    return file.extension.equals("apk", true) || file.name.endsWith(".apk", true)
 }
