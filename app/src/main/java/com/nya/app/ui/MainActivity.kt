@@ -622,6 +622,17 @@ private fun NyaAppScreen(
                 fontSize = 11.sp,
                 color = Color.Gray
             )
+
+            Spacer(Modifier.height(32.dp))
+            Text(
+                "by 掘尺川",
+                fontSize = 12.sp,
+                color = Color(0xFFE25C8A),
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(Modifier.height(16.dp))
         }
     }
 

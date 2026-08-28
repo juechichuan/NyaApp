@@ -13,9 +13,9 @@ android {
         minSdk = 24 // Android 7.0，兼容绝大多数设备
         targetSdk = 35 // Android 15（向上兼容 Android 16）
         // 版本号规则：小更新+0.01，大更新+0.1
-        // 1.43 → 1.53 大更新：下载进度条 + MD5校验 + 热更新体验
-        versionCode = 18
-        versionName = "1.53"
+        // 1.53 → 1.54 小更新：关于页面改为关于作者+删赞赏码+首页by署名
+        versionCode = 19
+        versionName = "1.54"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }

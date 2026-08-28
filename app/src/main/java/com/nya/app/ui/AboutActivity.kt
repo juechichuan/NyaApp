@@ -139,8 +139,8 @@ private fun AboutScreen(onBack: () -> Unit) {
 
             Spacer(Modifier.height(24.dp))
 
-            // 赞助
-            Text("赞助作者", fontWeight = FontWeight.SemiBold, color = Color(0xFFE25C8A), fontSize = 14.sp)
+            // 关于作者
+            Text("关于作者", fontWeight = FontWeight.SemiBold, color = Color(0xFFE25C8A), fontSize = 14.sp)
             Spacer(Modifier.height(6.dp))
             Card(
                 shape = RoundedCornerShape(12.dp),
@@ -156,21 +156,8 @@ private fun AboutScreen(onBack: () -> Unit) {
                         fontSize = 12.sp,
                         color = Color.Gray
                     )
-                    Spacer(Modifier.height(12.dp))
-                    // 赞赏码图片 — 用 painterResource 走 Compose 资源加载通道，比 BitmapFactory 稳定
-                    Box(
-                        modifier = Modifier
-                            .background(Color.White, RoundedCornerShape(10.dp))
-                            .padding(6.dp)
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_sponsor_code),
-                            contentDescription = "赞赏码",
-                            modifier = Modifier.size(180.dp)
-                        )
-                    }
                     Spacer(Modifier.height(8.dp))
-                    Text("感谢你的支持 ❤️", fontSize = 12.sp, color = Color(0xFFE25C8A))
+                    Text("by 掘尺川", fontSize = 13.sp, color = Color(0xFFE25C8A), fontWeight = FontWeight.Medium)
                 }
             }
         }
