@@ -70,6 +70,8 @@ private fun NyaAppScreen(
     val appendMode by prefs.appendMode.collectAsStateWithLifecycle(initialValue = AppendMode.IDLE)
     val idleDelayMs by prefs.idleDelayMs.collectAsStateWithLifecycle(initialValue = 1200)
     val punctuationDelayMs by prefs.punctuationDelayMs.collectAsStateWithLifecycle(initialValue = 700)
+    val kaomojiEnabled by prefs.kaomojiEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val customKaomojis by prefs.customKaomojis.collectAsStateWithLifecycle(initialValue = "")
 
     var a11yEnabled by remember { mutableStateOf(isAccessibilityServiceEnabled(ctx)) }
     val serviceRunning = NyaAccessibilityService.isRunning()
@@ -82,6 +84,7 @@ private fun NyaAppScreen(
     val serviceRunningNow = remember(refreshTick) { NyaAccessibilityService.isRunning() }
 
     var showContentDialog by remember { mutableStateOf(false) }
+    var showKaomojiDialog by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
 
@@ -153,6 +156,42 @@ private fun NyaAppScreen(
                     Text("当前：「 $appendContent 」，点击可自定义", color = Color.Gray, fontSize = 12.sp)
                 }
                 Text("›", color = Color.Gray, fontSize = 20.sp)
+            }
+            HorizontalDivider(color = Color(0x22000000))
+
+            // 随机喵颜文字
+            SwitchRow(
+                title = "追加喵颜文字",
+                desc = "在「$appendContent」后再随机拼一个喵相关颜文字",
+                checked = kaomojiEnabled,
+                onCheckedChange = { scope.launch { prefs.setKaomojiEnabled(it) } }
+            )
+            if (kaomojiEnabled) {
+                val customCount = customKaomojis.lineSequence().map { it.trim() }.count { it.isNotEmpty() }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp)
+                        .clickable { showKaomojiDialog = true }
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🎨", fontSize = 20.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("自定义颜文字库", fontWeight = FontWeight.Medium)
+                        Text(
+                            "默认库 ${NyaPrefs.DEFAULT_KAOMOJIS.size} 个，自定义 $customCount 个，点击管理",
+                            color = Color.Gray, fontSize = 12.sp
+                        )
+                        Text(
+                            "预览示例：${NyaPrefs.DEFAULT_KAOMOJIS.first()}  ${NyaPrefs.DEFAULT_KAOMOJIS[1]}  ${NyaPrefs.DEFAULT_KAOMOJIS[2]}",
+                            fontSize = 11.sp, color = Color(0xFFE25C8A),
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    Text("›", color = Color.Gray, fontSize = 20.sp)
+                }
             }
             HorizontalDivider(color = Color(0x22000000))
 
@@ -350,6 +389,57 @@ private fun NyaAppScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showContentDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // ---------- 自定义颜文字库 Dialog ----------
+    if (showKaomojiDialog) {
+        var draft by remember { mutableStateOf(customKaomojis) }
+        AlertDialog(
+            onDismissRequest = { showKaomojiDialog = false },
+            title = { Text("自定义颜文字库") },
+            text = {
+                Column {
+                    Text("每行一个颜文字，App 会在默认库基础上叠加使用；\n全部清空表示仅使用默认库（共 ${NyaPrefs.DEFAULT_KAOMOJIS.size} 个）。",
+                        fontSize = 12.sp, color = Color.Gray)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        label = { Text("自定义颜文字") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        maxLines = 10
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { draft = "" }) {
+                            Text("清空自定义", color = Color(0xFFE25C8A), fontSize = 12.sp)
+                        }
+                        TextButton(onClick = {
+                            draft = NyaPrefs.DEFAULT_KAOMOJIS.take(8).joinToString("\n")
+                        }) {
+                            Text("填充默认示例", fontSize = 12.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    scope.launch {
+                        prefs.setCustomKaomojis(draft)
+                        showKaomojiDialog = false
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showKaomojiDialog = false }) { Text("取消") }
             }
         )
     }

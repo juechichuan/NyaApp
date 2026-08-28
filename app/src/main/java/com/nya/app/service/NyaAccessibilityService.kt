@@ -11,6 +11,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.os.bundleOf
 import com.nya.app.NyaApplication
 import com.nya.app.data.AppendMode
+import com.nya.app.data.NyaPrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,6 +42,11 @@ class NyaAccessibilityService : AccessibilityService() {
     @Volatile private var appendMode = AppendMode.IDLE
     @Volatile private var idleDelayMs = 1200
     @Volatile private var punctuationDelayMs = 700
+
+    // 喵颜文字相关（追加内容后随机拼一个）
+    @Volatile private var kaomojiEnabled = false
+    @Volatile private var customKaomojisRaw = ""
+    private val rng = java.util.Random()
 
     @Volatile private var pendingAppendRunnable: Runnable? = null
     @Volatile private var lastAppendedText: String? = null
@@ -87,6 +93,16 @@ class NyaAccessibilityService : AccessibilityService() {
         scope.launch {
             (application as NyaApplication).prefs.punctuationDelayMs.collectLatest {
                 withContext(Dispatchers.Main) { punctuationDelayMs = it }
+            }
+        }
+        scope.launch {
+            (application as NyaApplication).prefs.kaomojiEnabled.collectLatest {
+                withContext(Dispatchers.Main) { kaomojiEnabled = it }
+            }
+        }
+        scope.launch {
+            (application as NyaApplication).prefs.customKaomojis.collectLatest {
+                withContext(Dispatchers.Main) { customKaomojisRaw = it }
             }
         }
     }
@@ -183,18 +199,18 @@ class NyaAccessibilityService : AccessibilityService() {
         if (lastAppendedText != null && currentText == lastAppendedText) return
 
         cancelPendingAppend()
-        if (currentText.endsWith(appendContent) && currentText.length > appendContent.length) {
-            if (currentText != lastAppendedText) {
-                val restored = currentText.removeSuffix(appendContent)
-                if (restored != currentText) {
-                    if (appendTextToNode(node, restored)) {
-                        lastAppendedText = null
-                    }
+        // --- 兼容颜文字：如果末尾已经是「appendContent + 任一颜文字」，尝试撤回（用户继续输入时等价于没追加）
+        if (endsWithFullAppend(currentText) && currentText != lastAppendedText) {
+            val restored = stripFullAppend(currentText)
+            if (restored != null) {
+                if (appendTextToNode(node, restored)) {
+                    lastAppendedText = null
                 }
             }
         }
 
-        if (currentText.endsWith(appendContent)) return
+        // --- 去重：末尾已经是喵（或喵+颜文字）不再追加
+        if (currentText.endsWith(appendContent) || endsWithFullAppend(currentText)) return
 
         val editor = node
         Log.d(TAG, "检测到文本变化，${idleDelayMs}ms 后追加「$appendContent」 → 当前: \"$currentText\"")
@@ -203,12 +219,13 @@ class NyaAccessibilityService : AccessibilityService() {
             try {
                 val latestText = editor.text?.toString().orEmpty()
                 if (latestText.isBlank()) return@Runnable
-                if (latestText.endsWith(appendContent)) return@Runnable
-                val newText = latestText + appendContent
+                if (latestText.endsWith(appendContent) || endsWithFullAppend(latestText)) return@Runnable
+                val effective = makeEffectiveAppend()
+                val newText = latestText + effective
                 val ok = appendTextToNode(editor, newText)
                 if (ok) {
                     lastAppendedText = newText
-                    Log.i(TAG, "✓ 已追加「$appendContent」→ \"$newText\"")
+                    Log.i(TAG, "✓ 已追加「$effective」→ \"$newText\"")
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "追加文本异常", t)
@@ -231,7 +248,7 @@ class NyaAccessibilityService : AccessibilityService() {
             return
         }
         if (currentText == lastAppendedText) return
-        if (currentText.endsWith(appendContent)) return
+        if (currentText.endsWith(appendContent) || endsWithFullAppend(currentText)) return
 
         val punctuations = charArrayOf('。', '，', '！', '？', '；', '：', '、',
             '.', ',', '!', '?', ';', ':', '~', '～', '…')
@@ -240,9 +257,7 @@ class NyaAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (currentText.length >= 2 && currentText.endsWith(appendContent) &&
-            currentText[currentText.length - appendContent.length - 1] in punctuations
-        ) return
+        if (currentText.length >= 2 && endsWithFullAppend(currentText)) return
 
         cancelPendingAppend()
         val editor = node
@@ -252,14 +267,15 @@ class NyaAccessibilityService : AccessibilityService() {
             try {
                 val latestText = editor.text?.toString().orEmpty()
                 if (latestText.isBlank()) return@Runnable
-                if (latestText.endsWith(appendContent)) return@Runnable
+                if (latestText.endsWith(appendContent) || endsWithFullAppend(latestText)) return@Runnable
                 val lastChar = latestText.lastOrNull()
                 if (lastChar != null && lastChar !in punctuations) return@Runnable
-                val newText = latestText + appendContent
+                val effective = makeEffectiveAppend()
+                val newText = latestText + effective
                 val ok = appendTextToNode(editor, newText)
                 if (ok) {
                     lastAppendedText = newText
-                    Log.i(TAG, "✓ 标点后已追加「$appendContent」→ \"$newText\"")
+                    Log.i(TAG, "✓ 标点后已追加「$effective」→ \"$newText\"")
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "标点追加异常", t)
@@ -274,6 +290,64 @@ class NyaAccessibilityService : AccessibilityService() {
     private fun cancelPendingAppend() {
         pendingAppendRunnable?.let { mainHandler.removeCallbacks(it) }
         pendingAppendRunnable = null
+    }
+
+    // ============================
+    //  喵颜文字：合并库 / 随机生成 / 去重撤回兼容
+    // ============================
+    /** 合并默认颜文字库 + 用户自定义（按行，去掉空/白行） */
+    private fun mergedKaomojiList(): List<String> {
+        val default = NyaPrefs.DEFAULT_KAOMOJIS
+        val custom = customKaomojisRaw
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        return if (custom.isEmpty()) default else (default + custom)
+    }
+
+    /** 返回"最终要追加的字符串"
+     *  未启用颜文字 → 直接返回 appendContent
+     *  启用颜文字 → appendContent + 随机颜文字 */
+    private fun makeEffectiveAppend(): String {
+        if (!kaomojiEnabled) return appendContent
+        val list = mergedKaomojiList()
+        if (list.isEmpty()) return appendContent
+        val k = list[rng.nextInt(list.size)]
+        return appendContent + k
+    }
+
+    /** 已追加判定：判断末尾是否已经以 [appendContent + 任一颜文字] 结尾
+     *  （或简单以 appendContent 结尾也算已追加）*/
+    private fun endsWithFullAppend(text: String): Boolean {
+        if (text.isEmpty()) return false
+        if (text.endsWith(appendContent) && text.length > appendContent.length) return true
+        // 因为颜文字在喵后面，所以末端是颜文字；但需要判断 text.substringBeforeLast(kaomoji) 末尾是 appendContent
+        val list = mergedKaomojiList()
+        for (k in list) {
+            if (k.isNotEmpty() && text.endsWith(k) && text.length > appendContent.length + k.length) {
+                val trimmed = text.removeSuffix(k)
+                if (trimmed.endsWith(appendContent)) return true
+            }
+        }
+        return false
+    }
+
+    /** 撤回辅助：把末尾 "appendContent + kaomoji" 或 "appendContent" 完整移除 */
+    private fun stripFullAppend(text: String): String? {
+        if (text.length <= appendContent.length) return null
+        // 先尝试带颜文字的长后缀（优先匹配长的，防止只把喵去掉颜文字残留）
+        val list = mergedKaomojiList().sortedByDescending { it.length }
+        for (k in list) {
+            val combined = appendContent + k
+            if (k.isNotEmpty() && text.endsWith(combined) && text.length > combined.length) {
+                return text.removeSuffix(combined)
+            }
+        }
+        if (text.endsWith(appendContent)) {
+            return text.removeSuffix(appendContent)
+        }
+        return null
     }
 
     // ============================
@@ -337,14 +411,17 @@ class NyaAccessibilityService : AccessibilityService() {
         if (isPasswordInput(editor)) return
 
         val currentText = editor.text?.toString().orEmpty()
-        if (currentText.isBlank() || currentText.endsWith(appendContent)) return
+        if (currentText.isBlank() ||
+            currentText.endsWith(appendContent) ||
+            endsWithFullAppend(currentText)) return
 
         appending = true
         try {
-            val newText = currentText + appendContent
+            val effective = makeEffectiveAppend()
+            val newText = currentText + effective
             appendTextToNode(editor, newText)
             lastAppendedText = newText
-            Log.i(TAG, "✓ fallback 已追加「$appendContent」→ \"$newText\"")
+            Log.i(TAG, "✓ fallback 已追加「$effective」→ \"$newText\"")
         } catch (t: Throwable) {
             Log.e(TAG, "fallback 追加异常", t)
         } finally {

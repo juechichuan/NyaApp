@@ -39,6 +39,41 @@ class NyaPrefs(private val context: Context) {
         val APPEND_MODE = stringPreferencesKey("append_mode")
         val IDLE_DELAY_MS = intPreferencesKey("idle_delay_ms")
         val PUNCTUATION_DELAY_MS = intPreferencesKey("punctuation_delay_ms")
+        val KAOMOJI_ENABLED = booleanPreferencesKey("kaomoji_enabled")
+        val CUSTOM_KAOMOJIS = stringPreferencesKey("custom_kaomojis")
+    }
+
+    // ============================
+    //  默认喵颜文字库（与"喵/猫"关联，可爱风格）
+    // ============================
+    companion object {
+        val DEFAULT_KAOMOJIS: List<String> = listOf(
+            "(=^･ω･^=)",
+            "(=´ㅅ`=)",
+            "(=๑>◡<๑=)",
+            "(=^･ｪ･^=)",
+            "(=^･^=)",
+            "(=・ω・=)",
+            "(≈>ܫ<≈)",
+            "(=^‥^=)",
+            "(₌ↀωↀ₌)",
+            "(=｀ω´=)",
+            "(=^-ω-^=)",
+            "(^..^)",
+            "(=^･ｪ･^)/",
+            "=^.^=",
+            "(=^･ω･^)ﾉ",
+            "ฅ(^・ω・^ฅ)",
+            "(ฅ´ω`ฅ)",
+            "ฅ(ㅇㅅㅇ❀)ฅ",
+            "(=^･ω･^)ノ♡",
+            "ฅ^•ﻌ•^ฅ",
+            "(=ΦωΦ=)",
+            "(๑ↀᆺↀ๑)",
+            "(>^ω^<)",
+            "ฅ(•ㅅ•❀)ฅ",
+            "(｡･ω･｡)ﾉ♡"
+        )
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -78,6 +113,16 @@ class NyaPrefs(private val context: Context) {
         .map { p -> (p[Keys.PUNCTUATION_DELAY_MS] ?: 700).coerceIn(200, 5000) }
         .stateIn(scope, SharingStarted.Eagerly, 700)
 
+    /** 是否在追加内容后随机追加一个喵颜文字 */
+    val kaomojiEnabled: Flow<Boolean> = context.dataStore.data
+        .map { p -> p[Keys.KAOMOJI_ENABLED] ?: false }
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
+    /** 用户自定义颜文字库（多行，每行一个；空串表示使用默认库） */
+    val customKaomojis: Flow<String> = context.dataStore.data
+        .map { p -> p[Keys.CUSTOM_KAOMOJIS] ?: "" }
+        .stateIn(scope, SharingStarted.Eagerly, "")
+
     suspend fun setMasterEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.MASTER_ENABLED] = enabled }
     }
@@ -106,8 +151,16 @@ class NyaPrefs(private val context: Context) {
         context.dataStore.edit { it[Keys.PUNCTUATION_DELAY_MS] = ms.coerceIn(200, 5000) }
     }
 
+    suspend fun setKaomojiEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.KAOMOJI_ENABLED] = enabled }
+    }
+
+    suspend fun setCustomKaomojis(raw: String) {
+        context.dataStore.edit { it[Keys.CUSTOM_KAOMOJIS] = raw }
+    }
+
     fun snapshotBlocking(): Snapshot {
-        val fallback = Snapshot(true, "喵", emptySet(), true, AppendMode.IDLE, 1200, 700)
+        val fallback = Snapshot(true, "喵", emptySet(), true, AppendMode.IDLE, 1200, 700, false, "")
         val prefs: Preferences? = runCatching {
             runBlocking {
                 withTimeoutOrNull(800) {
@@ -126,7 +179,9 @@ class NyaPrefs(private val context: Context) {
                 else -> AppendMode.IDLE
             },
             idleDelayMs = (prefs[Keys.IDLE_DELAY_MS] ?: 1200).coerceIn(300, 5000),
-            punctuationDelayMs = (prefs[Keys.PUNCTUATION_DELAY_MS] ?: 700).coerceIn(200, 5000)
+            punctuationDelayMs = (prefs[Keys.PUNCTUATION_DELAY_MS] ?: 700).coerceIn(200, 5000),
+            kaomojiEnabled = prefs[Keys.KAOMOJI_ENABLED] ?: false,
+            customKaomojis = prefs[Keys.CUSTOM_KAOMOJIS] ?: ""
         )
     }
 
@@ -137,6 +192,8 @@ class NyaPrefs(private val context: Context) {
         val isGlobalMode: Boolean,
         val appendMode: AppendMode,
         val idleDelayMs: Int,
-        val punctuationDelayMs: Int
+        val punctuationDelayMs: Int,
+        val kaomojiEnabled: Boolean,
+        val customKaomojis: String
     )
 }
