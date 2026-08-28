@@ -61,21 +61,36 @@ class MainActivity : ComponentActivity() {
         scope: kotlinx.coroutines.CoroutineScope,
         onStateChange: (DownloadState) -> Unit
     ) {
-        // 检查安装权限
+        // 检查安装权限（8.0+）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val allowed = packageManager.canRequestPackageInstalls()
+            val allowed = try {
+                packageManager.canRequestPackageInstalls()
+            } catch (e: Exception) { false }
             if (!allowed) {
-                val i = Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:$packageName")
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(i)
+                try {
+                    val i = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(i)
+                } catch (e: Exception) {
+                    // ColorOS 可能不支持此 Intent，降级到通用设置页
+                    try {
+                        val fallback = Intent(Settings.ACTION_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(fallback)
+                    } catch (e2: Exception) {
+                        onStateChange(DownloadState.Failed("无法打开安装权限设置页，请手动到系统设置中开启"))
+                    }
+                }
                 return
             }
         }
+        // 启动下载协程
         scope.launch {
             downloadApkWithProgress(this@MainActivity, decision.info) { state ->
-                onStateChange(state)
+                // 确保在主线程更新 Compose state
+                runOnUiThread { onStateChange(state) }
             }
         }
     }
@@ -97,6 +112,7 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 var updateDecision by remember { mutableStateOf<UpdateDecision?>(null) }
                 var downloadState by remember { mutableStateOf<DownloadState>(DownloadState.Idle) }
+                var downloadDone by remember { mutableStateOf(false) }  // 防止下载成功后重复弹窗
                 LaunchedEffect(Unit) {
                     val info = withContext(Dispatchers.IO) { fetchUpdateInfo() }
                     if (info != null) updateDecision = info.evaluate(localVC)
@@ -148,7 +164,13 @@ class MainActivity : ComponentActivity() {
                     }
                     is DownloadState.Success -> {
                         LaunchedEffect(Unit) {
-                            tryInstallApk(ctx, ds.apkFile)
+                            try {
+                                tryInstallApk(ctx, ds.apkFile)
+                            } catch (e: Exception) {
+                                // 安装失败也不重新弹窗，显示错误
+                                downloadState = DownloadState.Failed("唤起安装器失败: ${e.message}")
+                            }
+                            downloadDone = true
                             downloadState = DownloadState.Idle
                         }
                     }
@@ -189,7 +211,7 @@ class MainActivity : ComponentActivity() {
 
                 // —— 强制更新 Dialog：不可关闭 ——
                 val decision = updateDecision
-                if (decision != null && decision.forced && downloadState is DownloadState.Idle) {
+                if (decision != null && decision.forced && downloadState is DownloadState.Idle && !downloadDone) {
                     AlertDialog(
                         onDismissRequest = { /* 强制更新，不允许关闭 */ },
                         title = {
@@ -226,7 +248,7 @@ class MainActivity : ComponentActivity() {
                         dismissButton = { },
                         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
                     )
-                } else if (decision != null && decision.hasUpdate && downloadState is DownloadState.Idle) {
+                } else if (decision != null && decision.hasUpdate && downloadState is DownloadState.Idle && !downloadDone) {
                     // 可选更新
                     var showOptional by remember { mutableStateOf(true) }
                     if (showOptional) {
