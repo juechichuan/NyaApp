@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="nya_apk_cache" path="apk/" />
+    <files-path name="nya_apk_files" path="apk/" />
+    <external-cache-path name="nya_external_apk" path="apk/" />
+</paths>

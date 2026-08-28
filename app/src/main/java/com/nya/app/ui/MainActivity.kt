@@ -1,8 +1,11 @@
 package com.nya.app.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -34,6 +37,9 @@ import com.nya.app.data.AppendMode
 import com.nya.app.data.NyaPrefs
 import com.nya.app.service.NyaAccessibilityService
 import com.nya.app.service.NyaForegroundService
+import com.nya.app.update.UpdateDecision
+import com.nya.app.update.enqueueUpdateDownload
+import com.nya.app.update.fetchUpdateInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,19 +53,131 @@ class MainActivity : ComponentActivity() {
             if (granted) startForegroundServiceCompat()
         }
 
+    // 安装未知来源权限请求（8.0+）—— 用户点「立即更新」按钮，如果没授权就跳到系统页
+    private fun ensureInstallPermissionThenDownload(decision: UpdateDecision) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val allowed = packageManager.canRequestPackageInstalls()
+            if (!allowed) {
+                val i = Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName")
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(i)
+                return
+            }
+        }
+        enqueueUpdateDownload(this, decision.info)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = (application as NyaApplication).prefs
         ensureForegroundService()
+        val localVC = getLocalVersionCode()
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Color(0xFFE91E63),
                 secondary = Color(0xFFF48FB1),
                 tertiary = Color(0xFF7C4DFF)
             )) {
+                val ctx = LocalContext.current as MainActivity
+                var updateDecision by remember { mutableStateOf<UpdateDecision?>(null) }
+                var checking by remember { mutableStateOf(true) }
+                LaunchedEffect(Unit) {
+                    val info = withContext(Dispatchers.IO) { fetchUpdateInfo() }
+                    checking = false
+                    if (info != null) updateDecision = info.evaluate(localVC)
+                }
+                // —— 强制更新 Dialog：不可关闭，不更新无法使用 ——
+                val decision = updateDecision
+                if (decision != null && decision.forced) {
+                    AlertDialog(
+                        onDismissRequest = { /* 强制更新，不允许关闭 */ },
+                        title = {
+                            Text(
+                                decision.info.title.ifBlank { "必须更新才能使用" },
+                                fontWeight = FontWeight.Bold
+                            )
+                        },
+                        text = {
+                            Column {
+                                Text(decision.info.message.ifBlank {
+                                    "当前版本过低，云端已强制要求更新至 v${decision.info.versionName}。" +
+                                            "\n请点击下方按钮下载并安装新版。"
+                                })
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    "本地版本: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\n" +
+                                            "新版本: ${decision.info.versionName} (${decision.info.versionCode})",
+                                    fontSize = 12.sp,
+                                    color = Color.Gray
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = { ctx.ensureInstallPermissionThenDownload(decision) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFE25C8A),
+                                    contentColor = Color.White
+                                )
+                            ) { Text("立即下载并更新") }
+                        },
+                        dismissButton = { },
+                        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+                    )
+                } else if (decision != null && decision.hasUpdate) {
+                    // 可选更新（非强制，minVersionCode 达标）
+                    var showOptional by remember { mutableStateOf(true) }
+                    if (showOptional) {
+                        AlertDialog(
+                            onDismissRequest = { showOptional = false },
+                            title = { Text(decision.info.title.ifBlank { "发现新版本" }) },
+                            text = {
+                                Column {
+                                    Text(decision.info.message.ifBlank { "可选更新：v${decision.info.versionName}" })
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(
+                                        "新版本: ${decision.info.versionName} (${decision.info.versionCode})",
+                                        fontSize = 12.sp,
+                                        color = Color.Gray
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        ctx.ensureInstallPermissionThenDownload(decision)
+                                        showOptional = false
+                                    }
+                                ) { Text("立即更新") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showOptional = false }) { Text("稍后") }
+                            }
+                        )
+                    }
+                }
                 NyaAppScreen(prefs = prefs, activity = this@MainActivity)
             }
         }
+    }
+
+    private fun getLocalVersionCode(): Int {
+        return runCatching {
+            val pkgInfo: PackageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pkgInfo.longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                pkgInfo.versionCode
+            }
+        }.getOrDefault(0)
     }
 
     /** 启动常驻通知前台服务（Android 13+ 先请求通知权限） */
