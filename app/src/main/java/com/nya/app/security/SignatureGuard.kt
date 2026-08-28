@@ -25,13 +25,18 @@ import java.security.MessageDigest
  */
 object SignatureGuard {
 
-    /** 32 字节 XOR key，用于混淆预期签名指纹 */
-    private val XOR_KEY = byteArrayOf(
-        0x5A, 0x39, 0x71, 0xC2.toByte(), 0x18, 0x4D, 0xE6.toByte(), 0x8F.toByte(),
-        0x3B, 0x27, 0x91.toByte(), 0xA4.toByte(), 0x5C, 0xD3.toByte(), 0x6E, 0x12,
-        0xF8.toByte(), 0x44, 0xB7.toByte(), 0x90, 0x33, 0x65, 0xCC.toByte(), 0x1D,
-        0xAF.toByte(), 0x2B, 0x78, 0xE9.toByte(), 0x50, 0x14, 0xDB.toByte(), 0x63
+    /** 32 字节 XOR key，用于混淆预期签名指纹（hex 字符串解析，避免 byte 字面量 > 0x7F 的类型问题） */
+    private val XOR_KEY: ByteArray = hexToBytes(
+        "5A3971C2184DE68F3B2791A45CD36E12F844B7903365CC1DAF2B78E95014DB63"
     )
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val clean = if (hex.length % 2 != 0) "0" + hex else hex
+        return ByteArray(clean.length / 2) { i ->
+            ((Character.digit(clean[i * 2], 16) shl 4) or
+                    Character.digit(clean[i * 2 + 1], 16)).toByte()
+        }
+    }
 
     /**
      * 预期签名 SHA-256（XOR 混淆后再 Base64）。
