@@ -1,15 +1,20 @@
 name: Build APK
 
 on:
-  # 手动触发
   workflow_dispatch:
-  # 推送代码时自动触发
   push:
     branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    env:
+      # CI 专用 release keystore（base64 后存到 GitHub Secrets）
+      NYA_KEYSTORE_FILE: ${{ github.workspace }}/nya-release.jks
+      NYA_KEYSTORE_PASSWORD: ${{ secrets.NYA_KEYSTORE_PASSWORD }}
+      NYA_KEY_ALIAS: ${{ secrets.NYA_KEY_ALIAS }}
+      NYA_KEY_PASSWORD: ${{ secrets.NYA_KEY_PASSWORD }}
 
     steps:
     - name: Checkout
@@ -26,15 +31,35 @@ jobs:
       with:
         packages: 'platforms;android-35 build-tools;35.0.0'
 
+    - name: Decode release keystore from secret
+      run: |
+        if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > $NYA_KEYSTORE_FILE
+          echo "Keystore decoded: $(stat -c '%s' $NYA_KEYSTORE_FILE) bytes"
+          keytool -list -v -keystore $NYA_KEYSTORE_FILE -storepass "$NYA_KEYSTORE_PASSWORD" -alias "$NYA_KEY_ALIAS" 2>&1 | grep -E "SHA256|SHA1" | head -5
+        else
+          echo "::warning::RELEASE_KEYSTORE_BASE64 secret not set, will fall back to debug-signed APK (SignatureGuard check will FAIL on real device)"
+        fi
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Build Debug APK
+    - name: Build Release APK
+      run: ./gradlew :app:assembleRelease --no-daemon
+
+    - name: Build Debug APK (fallback for legacy users)
       run: ./gradlew :app:assembleDebug --no-daemon
 
-    - name: Upload APK
+    - name: Upload Release APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: NyaApp-release-apk
+        path: app/build/outputs/apk/release/*.apk
+        retention-days: 30
+
+    - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
         name: NyaApp-debug-apk
         path: app/build/outputs/apk/debug/*.apk
-        retention-days: 30
+        retention-days: 7

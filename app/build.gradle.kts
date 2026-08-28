@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,12 +15,33 @@ android {
         minSdk = 24 // Android 7.0，兼容绝大多数设备
         targetSdk = 35 // Android 15（向上兼容 Android 16）
         // 版本号规则：小更新+0.01，大更新+0.1
-        // 1.54 → 1.55 小更新：修复点击立即下载并更新后闪退问题
-        versionCode = 20
-        versionName = "1.55"
+        // 1.55 → 1.56 大更新(+0.1)：APK 加固（运行时签名校验 + 防调试 + R8 完整混淆 + release 正式签名）
+        versionCode = 21
+        versionName = "1.56"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+    }
+
+    // 必须放在 buildTypes 之前，便于在 release buildType 里引用 nyaRelease
+    signingConfigs {
+        create("nyaRelease") {
+            // CI 通过环境变量注入 keystore；本地通过 gradle.properties 注入
+            val ksFile = providers.gradleProperty("NYA_KEYSTORE_FILE").orNull
+                ?: System.getenv("NYA_KEYSTORE_FILE")
+            val ksPwd = providers.gradleProperty("NYA_KEYSTORE_PASSWORD").orNull
+                ?: System.getenv("NYA_KEYSTORE_PASSWORD")
+            val ksAlias = providers.gradleProperty("NYA_KEY_ALIAS").orNull
+                ?: System.getenv("NYA_KEY_ALIAS")
+            val kPwd = providers.gradleProperty("NYA_KEY_PASSWORD").orNull
+                ?: System.getenv("NYA_KEY_PASSWORD")
+            if (ksFile != null && File(ksFile).exists() && ksPwd != null && ksAlias != null && kPwd != null) {
+                storeFile = File(ksFile)
+                storePassword = ksPwd
+                keyAlias = ksAlias
+                keyPassword = kPwd
+            }
+        }
     }
 
     buildTypes {
@@ -29,6 +52,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // release 必须用固定 keystore 签名，确保 SignatureGuard 校验通过
+            // 若 nyaRelease 未配置则回退到 debug 签名（仅本地开发场景）
+            signingConfig = signingConfigs.findByName("nyaRelease")
+                ?.takeIf { it.storeFile != null }
+                ?: signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false

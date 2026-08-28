@@ -22,3 +22,10 @@ captures/
 # Temp
 serve.py
 NyaApp.zip
+
+# 签名 keystore（绝不入库，只通过 GitHub Secrets 注入）
+keystore/
+*.jks
+*.keystore
+secrets/
+

@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Process
 import android.util.Log
 import com.nya.app.data.NyaPrefs
+import com.nya.app.security.SignatureGuard
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -27,6 +28,9 @@ class NyaApplication : Application() {
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
         instance = this
+        // 反篡改第一道防线：签名校验 + 防调试，不通过直接 kill 进程
+        // 放在 attachBaseContext 中尽早执行，确保后续逻辑无法被注入
+        SignatureGuard.verifyOnAppStart(this)
     }
 
     override fun onCreate() {
