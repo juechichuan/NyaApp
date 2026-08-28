@@ -1,7 +1,6 @@
 package com.nya.app.ui
 
 import android.Manifest
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -30,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nya.app.NyaApplication
@@ -73,7 +73,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         prefs = (application as NyaApplication).prefs
         ensureForegroundService()
-        val localVC = getLocalVersionCode()
+        val localPair = getLocalVersion()
+        val localVC = localPair.first
+        val localVN = localPair.second
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Color(0xFFE91E63),
@@ -82,10 +84,8 @@ class MainActivity : ComponentActivity() {
             )) {
                 val ctx = LocalContext.current as MainActivity
                 var updateDecision by remember { mutableStateOf<UpdateDecision?>(null) }
-                var checking by remember { mutableStateOf(true) }
                 LaunchedEffect(Unit) {
                     val info = withContext(Dispatchers.IO) { fetchUpdateInfo() }
-                    checking = false
                     if (info != null) updateDecision = info.evaluate(localVC)
                 }
                 // —— 强制更新 Dialog：不可关闭，不更新无法使用 ——
@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
                                 })
                                 Spacer(Modifier.height(12.dp))
                                 Text(
-                                    "本地版本: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\n" +
+                                    "本地版本: $localVN ($localVC)\n" +
                                             "新版本: ${decision.info.versionName} (${decision.info.versionCode})",
                                     fontSize = 12.sp,
                                     color = Color.Gray
@@ -163,7 +163,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun getLocalVersionCode(): Int {
+    private fun getLocalVersion(): Pair<Int, String> {
         return runCatching {
             val pkgInfo: PackageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
@@ -171,13 +171,14 @@ class MainActivity : ComponentActivity() {
                 @Suppress("DEPRECATION")
                 packageManager.getPackageInfo(packageName, 0)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val vc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 pkgInfo.longVersionCode.toInt()
             } else {
                 @Suppress("DEPRECATION")
                 pkgInfo.versionCode
             }
-        }.getOrDefault(0)
+            vc to (pkgInfo.versionName ?: "1.0.0")
+        }.getOrDefault(0 to "1.0.0")
     }
 
     /** 启动常驻通知前台服务（Android 13+ 先请求通知权限） */
