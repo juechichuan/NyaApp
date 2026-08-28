@@ -1,11 +1,11 @@
 {
-  "versionCode": 19,
-  "versionName": "1.54",
-  "minVersionCode": 18,
+  "versionCode": 20,
+  "versionName": "1.55",
+  "minVersionCode": 19,
   "force": false,
-  "downloadUrl": "https://github.com/juechichuan/NyaApp/releases/download/v1.54/app-debug.apk",
-  "title": "发现新版本 v1.54",
-  "message": "本次更新：关于页面改为关于作者+删除赞赏码+首页by掘尺川署名。",
-  "md5": "819717b721a35ed9457d487bb78f9143",
+  "downloadUrl": "https://github.com/juechichuan/NyaApp/releases/download/v1.55/app-debug.apk",
+  "title": "发现新版本 v1.55",
+  "message": "本次更新：修复点击「立即下载并更新」后应用闪退的问题，建议所有 v1.54 用户更新。",
+  "md5": "da1406285f09c5ff4fd22f185592b619",
   "apkSizeBytes": 13434526
 }
