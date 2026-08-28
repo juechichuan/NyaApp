@@ -32,7 +32,6 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.NyaApp"
-        android:extractNativeLibs="false"
         android:name=".NyaApplication">
 
         <activity
